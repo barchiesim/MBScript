@@ -7,4 +7,9 @@ public class AuditSettings
     // Persisted UI settings
     public string TableSearch { get; set; } = string.Empty;
     public bool DefaultConditionalUpdate { get; set; } = false;
+    // Last connected server/database
+    public string LastServer { get; set; } = string.Empty;
+    public string LastDatabase { get; set; } = string.Empty;
+    // Last connected user
+    public string LastUser { get; set; } = string.Empty;
 }

@@ -52,7 +52,6 @@ public class MainForm : Form
         _sql = sqlService;
         _config = config;
         _dbExplorer = new DatabaseExplorerService(sqlService);
-
         // Carica le impostazioni audit salvate (incluso stato UI)
         var auditSettings = SettingsService.LoadAuditSettings();
         _auditFilter = auditSettings.AuditFilter;
@@ -62,6 +61,10 @@ public class MainForm : Form
         txtTableSearch.Text = auditSettings.TableSearch;
         // Store default flag to use when showing ColumnSelectorDialog
         _defaultConditionalUpdate = auditSettings.DefaultConditionalUpdate;
+        // Restore last server/db if provided in config
+        if (!string.IsNullOrEmpty(auditSettings.LastServer)) _config.Server = auditSettings.LastServer;
+        if (!string.IsNullOrEmpty(auditSettings.LastDatabase)) _config.Database = auditSettings.LastDatabase;
+        if (!string.IsNullOrEmpty(auditSettings.LastUser)) _config.User = auditSettings.LastUser;
 
         InitializeComponent();
 
@@ -339,6 +342,7 @@ public class MainForm : Form
                     cmbDatabases.Items.Add(db.Name);
 
                 // Set initial selection BEFORE wiring the event to prevent spurious OnDatabaseChanged
+                // Prefer LastDatabase from settings (already applied to _config if present)
                 int idx = cmbDatabases.Items.IndexOf(_config.Database);
                 cmbDatabases.SelectedIndex = idx >= 0 ? idx : 0;
 
@@ -1051,6 +1055,10 @@ public class MainForm : Form
             var s = Services.SettingsService.LoadAuditSettings();
             s.TableSearch = txtTableSearch?.Text ?? string.Empty;
             s.DefaultConditionalUpdate = _defaultConditionalUpdate;
+            // Save last connected server/database
+            s.LastServer = _config.Server ?? string.Empty;
+            s.LastDatabase = _config.Database ?? string.Empty;
+            s.LastUser = _config.User ?? string.Empty;
             Services.SettingsService.SaveAuditSettings(s);
         }
         catch { }

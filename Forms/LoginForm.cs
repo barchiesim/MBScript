@@ -33,6 +33,15 @@ public class LoginForm : Form
         Font = new Font("Segoe UI", 9f);
 
         var cfg = GlobalConfig.Instance.DbConfig;
+        // Override with last used connection saved in settings if present
+        try
+        {
+            var s = SettingsService.LoadAuditSettings();
+            if (!string.IsNullOrEmpty(s.LastServer)) cfg.Server = s.LastServer;
+            if (!string.IsNullOrEmpty(s.LastDatabase)) cfg.Database = s.LastDatabase;
+            if (!string.IsNullOrEmpty(s.LastUser)) cfg.User = s.LastUser;
+        }
+        catch { }
         int margin = 16, lw = 80, cw = 270;
 
         var lblServer = new Label { Text = "Server:", Location = new Point(margin, 16), Size = new Size(lw, 20), TextAlign = ContentAlignment.MiddleRight };
