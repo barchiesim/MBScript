@@ -39,21 +39,26 @@ public class DatabaseExplorerService
 
     public Task<SqlResult<List<ColumnInfo>>> GetTableColumnsAsync(string database, string schema, string tableName) =>
         _sql.ExecuteQueryAsync<ColumnInfo>($@"
-            SELECT COLUMN_NAME AS column_name, DATA_TYPE AS data_type,
-                   CHARACTER_MAXIMUM_LENGTH AS character_maximum_length,
-                   IS_NULLABLE AS is_nullable, COLUMN_DEFAULT AS column_default,
-                   ORDINAL_POSITION AS ordinal_position
-            FROM [{database}].INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{tableName}'
-            ORDER BY ORDINAL_POSITION",
+            SELECT c.COLUMN_NAME AS column_name, c.DATA_TYPE AS data_type,
+                   c.CHARACTER_MAXIMUM_LENGTH AS character_maximum_length,
+                   c.IS_NULLABLE AS is_nullable, c.COLUMN_DEFAULT AS column_default,
+                   c.ORDINAL_POSITION AS ordinal_position,
+                   sc.is_identity
+            FROM [{database}].INFORMATION_SCHEMA.COLUMNS c
+            JOIN [{database}].sys.columns sc
+                ON sc.object_id = OBJECT_ID(N'[{database}].[{schema}].[{tableName}]')
+               AND sc.name = c.COLUMN_NAME
+            WHERE c.TABLE_SCHEMA = '{schema}' AND c.TABLE_NAME = '{tableName}'
+            ORDER BY c.ORDINAL_POSITION",
         r => new ColumnInfo
         {
-            ColumnName             = r["column_name"]?.ToString()               ?? "",
-            DataType               = r["data_type"]?.ToString()                 ?? "",
+            ColumnName             = r["column_name"]?.ToString()                           ?? "",
+            DataType               = r["data_type"]?.ToString()                             ?? "",
             CharacterMaximumLength = r["character_maximum_length"] is int len ? len : null,
-            IsNullable             = r["is_nullable"]?.ToString()               ?? "YES",
+            IsNullable             = r["is_nullable"]?.ToString()                           ?? "YES",
             ColumnDefault          = r["column_default"]?.ToString(),
-            OrdinalPosition        = r["ordinal_position"] is int ord ? ord : 0
+            OrdinalPosition        = r["ordinal_position"] is int ord ? ord : 0,
+            IsIdentity             = r["is_identity"] is bool b ? b : r["is_identity"]?.ToString() == "True"
         });
 
     public Task<SqlResult<List<PrimaryKeyInfo>>> GetPrimaryKeysAsync(string database, string schema, string tableName) =>
@@ -119,6 +124,18 @@ public class DatabaseExplorerService
         return pk.Success && pk.Data is not null
             ? pk.Data.Select(p => p.ColumnName).ToList()
             : new List<string>();
+    }
+
+    public async Task<List<string>> GetIdentityColumnsAsync(string database, string schema, string tableName)
+    {
+        var result = await _sql.ExecuteQueryAsync<string>($@"
+            SELECT c.name
+            FROM [{database}].sys.columns c
+            JOIN [{database}].sys.tables t ON c.object_id = t.object_id
+            JOIN [{database}].sys.schemas s ON t.schema_id = s.schema_id
+            WHERE s.name = '{schema}' AND t.name = '{tableName}' AND c.is_identity = 1",
+            r => r[0]?.ToString() ?? "");
+        return result.Success && result.Data is not null ? result.Data : new List<string>();
     }
 
     public async Task<string> GetTableDdlAsync(string database, string schema, string tableName)

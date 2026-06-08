@@ -23,6 +23,7 @@ public class ColumnInfo
     public string IsNullable { get; set; } = "YES";
     public string? ColumnDefault { get; set; }
     public int OrdinalPosition { get; set; }
+    public bool IsIdentity { get; set; }
 }
 
 public class PrimaryKeyInfo

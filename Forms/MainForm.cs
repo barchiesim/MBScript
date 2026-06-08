@@ -16,6 +16,7 @@ public class MainForm : Form
     // ─── State ───────────────────────────────────────────────────────────────
     private List<Dictionary<string, object?>> _queryResult = new();
     private List<string> _keyColumns = new();
+    private HashSet<string> _identityColumns = new(StringComparer.OrdinalIgnoreCase);
     private List<TableInfo> _allTables = new();
     private TableInfo? _selectedTable = null;
     private string _auditFilter = string.Empty;
@@ -406,6 +407,7 @@ public class MainForm : Form
         try
         {
             _keyColumns = await _dbExplorer.GetTableKeyColumnsAsync(db, schema, tbl);
+            _identityColumns = new HashSet<string>(await _dbExplorer.GetIdentityColumnsAsync(db, schema, tbl), StringComparer.OrdinalIgnoreCase);
             var scriptText = $"SELECT * FROM [{schema}].[{tbl}]";
             Action apply = () =>
             {
@@ -549,6 +551,7 @@ public class MainForm : Form
             if (_selectedTable is not null)
             {
                 _keyColumns = await _dbExplorer.GetTableKeyColumnsAsync(db, _selectedTable.TableSchema, _selectedTable.TableName);
+                _identityColumns = new HashSet<string>(await _dbExplorer.GetIdentityColumnsAsync(db, _selectedTable.TableSchema, _selectedTable.TableName), StringComparer.OrdinalIgnoreCase);
             }
             else
             {
@@ -559,6 +562,7 @@ public class MainForm : Form
                     var tbl = mx.Groups[2].Value;
                     _selectedTable = new TableInfo { TableSchema = sch, TableName = tbl, TableType = "BASE TABLE" };
                     _keyColumns = await _dbExplorer.GetTableKeyColumnsAsync(db, sch, tbl);
+                    _identityColumns = new HashSet<string>(await _dbExplorer.GetIdentityColumnsAsync(db, sch, tbl), StringComparer.OrdinalIgnoreCase);
                 }
             }
         }
@@ -610,7 +614,7 @@ public class MainForm : Form
             _defaultConditionalUpdate = dlg.ConditionalUpdate;
 
             if (scriptType == "INSERT")
-                script = BuildInsertScript(_selectedTable, dlg.SelectedKeyColumns, dlg.SelectedColumns, selRows);
+                script = BuildInsertScript(_selectedTable, dlg.SelectedKeyColumns, dlg.SelectedColumns, selRows, _identityColumns);
             else // UPDATE
                 script = dlg.ConditionalUpdate
                     ? BuildConditionalUpdateScript(_selectedTable, dlg.SelectedKeyColumns, dlg.SelectedColumns, selRows)
@@ -658,6 +662,7 @@ public class MainForm : Form
         if (val is null || val == DBNull.Value) return "NULL";
         if (val is bool b) return b ? "1" : "0";
         if (val is DateTime dt) return $" {{ts '{dt:yyyy-MM-dd HH:mm:ss.fff}'}}";
+        if (val is Guid g) return $"'{g}'";
         if (val is byte[] bytes) return "0x" + Convert.ToHexString(bytes);
         if (val is string s)
         {
@@ -679,11 +684,17 @@ public class MainForm : Form
                 ? $"{c} IS NULL"
                 : $"{c} = {FmtVal(row.GetValueOrDefault(c))}"));
 
-    private static string BuildInsertScript(TableInfo tbl, List<string> keyCols, List<string> valCols, List<Dictionary<string, object?>> rows)
+    private static string BuildInsertScript(TableInfo tbl, List<string> keyCols, List<string> valCols, List<Dictionary<string, object?>> rows, HashSet<string>? identityCols = null)
     {
         var sb = new StringBuilder();
         var allCols = keyCols.Concat(valCols).ToList();
         var fn = FullName(tbl);
+        var hasIdentity = identityCols is not null && allCols.Any(c => identityCols.Contains(c));
+        if (hasIdentity)
+        {
+            sb.AppendLine($"SET IDENTITY_INSERT {fn} ON");
+            sb.AppendLine();
+        }
         foreach (var row in rows)
         {
             if (keyCols.Count > 0)
@@ -697,6 +708,11 @@ public class MainForm : Form
             sb.AppendLine($"{tab}INSERT INTO {fn} ( {cols} )");
             sb.AppendLine($"{tab}SELECT {vals}");
             if (keyCols.Count > 0) sb.AppendLine("END");
+            sb.AppendLine();
+        }
+        if (hasIdentity)
+        {
+            sb.AppendLine($"SET IDENTITY_INSERT {fn} OFF");
             sb.AppendLine();
         }
         return sb.ToString();
@@ -811,8 +827,15 @@ public class MainForm : Form
                 : new List<string>();
 
             AddMessage($"Tabelle selezionate con filtri: {tables.Count}");
-            // Clear existing SQL and set the generated audit init script
-            SetSqlScript(AuditScriptBuilder.BuildInitScript(db, auditDb, tables));
+
+            var tableColumns = new Dictionary<string, List<ColumnInfo>>();
+            foreach (var tbl in tables)
+            {
+                var colRes = await _dbExplorer.GetTableColumnsAsync(db, "dbo", tbl);
+                tableColumns[tbl] = colRes.Success && colRes.Data is not null ? colRes.Data : new List<ColumnInfo>();
+            }
+
+            SetSqlScript(AuditScriptBuilder.BuildInitScript(db, auditDb, tableColumns));
             AddMessage($"Fine - Creazione script: Inizializzazione/Reset Audit_UPD. Script generato: {tables.Count} tabelle + {tables.Count * 3} trigger.");
         }
         finally { SetLoading(false); }

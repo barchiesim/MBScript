@@ -1,15 +1,16 @@
 using System.Text;
+using PBScriptNew.Models;
 
 namespace PBScriptNew.Services;
 
 public static class AuditScriptBuilder
 {
-    public static string BuildInitScript(string sourceDb, string auditDb, IList<string> tableNames)
+    public static string BuildInitScript(string sourceDb, string auditDb, IDictionary<string, List<ColumnInfo>> tableColumns)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"-- Script Inizializzazione Database Audit");
         sb.AppendLine($"-- Database origine: {sourceDb}  →  Audit: {auditDb}");
-        sb.AppendLine($"-- Data: {DateTime.Now}  Tabelle: {tableNames.Count}");
+        sb.AppendLine($"-- Data: {DateTime.Now}  Tabelle: {tableColumns.Count}");
         sb.AppendLine();
         sb.AppendLine("USE master;");
         sb.AppendLine($"IF EXISTS (SELECT * FROM sys.databases WHERE name = '{auditDb}')");
@@ -30,13 +31,13 @@ public static class AuditScriptBuilder
         sb.AppendLine("IF @sql <> '' BEGIN EXEC sp_executesql @sql; END");
         sb.AppendLine("GO");
         sb.AppendLine();
-        foreach (var tbl in tableNames)
+        foreach (var (tbl, cols) in tableColumns)
         {
-            AppendTrigger(sb, tbl, auditDb, "INSERT", "I", "NEW", "inserted");
-            AppendTriggerUpdate(sb, tbl, auditDb);
-            AppendTrigger(sb, tbl, auditDb, "DELETE", "D", "OLD", "deleted");
+            AppendTrigger(sb, tbl, auditDb, "INSERT", "I", "NEW", "inserted", cols);
+            AppendTriggerUpdate(sb, tbl, auditDb, cols);
+            AppendTrigger(sb, tbl, auditDb, "DELETE", "D", "OLD", "deleted", cols);
         }
-        sb.AppendLine($"PRINT 'Inizializzazione completata: {tableNames.Count * 3} trigger creati'");
+        sb.AppendLine($"PRINT 'Inizializzazione completata: {tableColumns.Count * 3} trigger creati'");
         return sb.ToString();
     }
 
@@ -88,44 +89,56 @@ PRINT 'Fine - Trigger disattivati'
 GO
 ";
 
-    private static void AppendTrigger(StringBuilder sb, string tbl, string auditDb, string dmlEvent, string tipoCmd, string tipoDato, string source)
+    private static (string selectTop, string colList) BuildColExpressions(List<ColumnInfo> columns)
     {
+        var cols = columns.Where(c => c.DataType != "timestamp" && c.DataType != "rowversion").ToList();
+        var selectTop = string.Join(", ", cols.Select(c =>
+            c.IsIdentity
+                ? $"CAST([{c.ColumnName}] AS {c.DataType.ToUpper()}) AS [{c.ColumnName}]"
+                : $"[{c.ColumnName}]"));
+        var colList = string.Join(", ", cols.Select(c => $"[{c.ColumnName}]"));
+        return (selectTop, colList);
+    }
+
+    private static void AppendTrigger(StringBuilder sb, string tbl, string auditDb, string dmlEvent, string tipoCmd, string tipoDato, string source, List<ColumnInfo> columns)
+    {
+        var (selectTop, colList) = BuildColExpressions(columns);
         sb.AppendLine($"CREATE TRIGGER tr_AUDIT_{tbl}_{dmlEvent} ON [{tbl}] AFTER {dmlEvent} AS");
         sb.AppendLine("BEGIN");
         sb.AppendLine("    SET NOCOUNT ON;");
-        sb.AppendLine("    DECLARE @dt DATETIME, @guid UNIQUEIDENTIFIER, @host VARCHAR(254), @user VARCHAR(254), @app VARCHAR(254), @cols NVARCHAR(MAX), @sql NVARCHAR(MAX);");
+        sb.AppendLine("    DECLARE @dt DATETIME, @guid UNIQUEIDENTIFIER, @host VARCHAR(254), @user VARCHAR(254), @app VARCHAR(254);");
         sb.AppendLine("    SET @dt=GETDATE(); SET @guid=NEWID(); SET @host=HOST_NAME(); SET @user=SYSTEM_USER; SET @app=APP_NAME();");
-        sb.AppendLine($"    SELECT * INTO #src FROM {source};");
-        sb.AppendLine($"    SELECT @cols = STUFF((SELECT ',' + QUOTENAME(c.name) FROM sys.columns c WHERE c.object_id = OBJECT_ID('{tbl}') AND c.system_type_id <> 189 ORDER BY c.column_id FOR XML PATH('')), 1, 1, '');");
+        sb.AppendLine($"    SELECT TOP 0 {selectTop} INTO #src FROM [{tbl}];");
+        sb.AppendLine($"    INSERT INTO #src SELECT {colList} FROM {source};");
         sb.AppendLine($"    IF NOT EXISTS (SELECT 1 FROM {auditDb}.dbo.sysobjects WHERE name = '{tbl}')");
-        sb.AppendLine($"        SET @sql = 'SELECT CAST(''{tipoCmd}'' AS CHAR(1)) AS dba_tipo_comando, CAST(''{tipoDato}'' AS CHAR(3)) AS dba_tipo_dato, CAST(''' + @host + ''' AS VARCHAR(254)) AS dba_macchina, CAST(''' + @user + ''' AS VARCHAR(254)) AS dba_utente, CAST(''' + CONVERT(VARCHAR(30),@dt,121) + ''' AS DATETIME) AS dba_data, CAST(''' + @app + ''' AS VARCHAR(254)) AS dba_applicazione, CAST(''' + CONVERT(VARCHAR(50),@guid) + ''' AS UNIQUEIDENTIFIER) AS dba_guid, CAST(1 AS INT) AS dba_progupd, ' + @cols + ' INTO {auditDb}..[{tbl}] FROM #src';");
+        sb.AppendLine($"        SELECT CAST('{tipoCmd}' AS CHAR(1)) AS dba_tipo_comando, CAST('{tipoDato}' AS CHAR(3)) AS dba_tipo_dato, @host AS dba_macchina, @user AS dba_utente, @dt AS dba_data, @app AS dba_applicazione, @guid AS dba_guid, CAST(1 AS INT) AS dba_progupd, {colList} INTO {auditDb}..[{tbl}] FROM #src;");
         sb.AppendLine("    ELSE");
-        sb.AppendLine($"        SET @sql = 'INSERT INTO {auditDb}..[{tbl}] (dba_tipo_comando,dba_tipo_dato,dba_macchina,dba_utente,dba_data,dba_applicazione,dba_guid,dba_progupd,' + @cols + ') SELECT CAST(''{tipoCmd}'' AS CHAR(1)),CAST(''{tipoDato}'' AS CHAR(3)),CAST(''' + @host + ''' AS VARCHAR(254)),CAST(''' + @user + ''' AS VARCHAR(254)),CAST(''' + CONVERT(VARCHAR(30),@dt,121) + ''' AS DATETIME),CAST(''' + @app + ''' AS VARCHAR(254)),CAST(''' + CONVERT(VARCHAR(50),@guid) + ''' AS UNIQUEIDENTIFIER),1,' + @cols + ' FROM #src';");
-        sb.AppendLine("    EXEC sp_executesql @sql;");
+        sb.AppendLine($"        INSERT INTO {auditDb}..[{tbl}] (dba_tipo_comando, dba_tipo_dato, dba_macchina, dba_utente, dba_data, dba_applicazione, dba_guid, dba_progupd, {colList}) SELECT CAST('{tipoCmd}' AS CHAR(1)), CAST('{tipoDato}' AS CHAR(3)), @host, @user, @dt, @app, @guid, 1, {colList} FROM #src;");
         sb.AppendLine("    DROP TABLE #src;");
         sb.AppendLine("END");
         sb.AppendLine("GO");
         sb.AppendLine();
     }
 
-    private static void AppendTriggerUpdate(StringBuilder sb, string tbl, string auditDb)
+    private static void AppendTriggerUpdate(StringBuilder sb, string tbl, string auditDb, List<ColumnInfo> columns)
     {
+        var (selectTop, colList) = BuildColExpressions(columns);
         sb.AppendLine($"CREATE TRIGGER tr_AUDIT_{tbl}_UPDATE ON [{tbl}] AFTER UPDATE AS");
         sb.AppendLine("BEGIN");
         sb.AppendLine("    SET NOCOUNT ON;");
-        sb.AppendLine("    DECLARE @dt DATETIME, @guid UNIQUEIDENTIFIER, @host VARCHAR(254), @user VARCHAR(254), @app VARCHAR(254), @cols NVARCHAR(MAX), @sql NVARCHAR(MAX);");
+        sb.AppendLine("    DECLARE @dt DATETIME, @guid UNIQUEIDENTIFIER, @host VARCHAR(254), @user VARCHAR(254), @app VARCHAR(254);");
         sb.AppendLine("    SET @dt=GETDATE(); SET @guid=NEWID(); SET @host=HOST_NAME(); SET @user=SYSTEM_USER; SET @app=APP_NAME();");
-        sb.AppendLine("    SELECT * INTO #ins FROM inserted; SELECT * INTO #del FROM deleted;");
-        sb.AppendLine($"    SELECT @cols = STUFF((SELECT ',' + QUOTENAME(c.name) FROM sys.columns c WHERE c.object_id = OBJECT_ID('{tbl}') AND c.system_type_id <> 189 ORDER BY c.column_id FOR XML PATH('')), 1, 1, '');");
+        sb.AppendLine($"    SELECT TOP 0 {selectTop} INTO #ins FROM [{tbl}];");
+        sb.AppendLine($"    INSERT INTO #ins SELECT {colList} FROM inserted;");
+        sb.AppendLine($"    SELECT TOP 0 {selectTop} INTO #del FROM [{tbl}];");
+        sb.AppendLine($"    INSERT INTO #del SELECT {colList} FROM deleted;");
         sb.AppendLine($"    IF NOT EXISTS (SELECT 1 FROM {auditDb}.dbo.sysobjects WHERE name = '{tbl}')");
         sb.AppendLine("    BEGIN");
-        sb.AppendLine($"        SET @sql = 'SELECT CAST(''U'' AS CHAR(1)) AS dba_tipo_comando, CAST(''OLD'' AS CHAR(3)) AS dba_tipo_dato, CAST(''' + @host + ''' AS VARCHAR(254)) AS dba_macchina, CAST(''' + @user + ''' AS VARCHAR(254)) AS dba_utente, CAST(''' + CONVERT(VARCHAR(30),@dt,121) + ''' AS DATETIME) AS dba_data, CAST(''' + @app + ''' AS VARCHAR(254)) AS dba_applicazione, CAST(''' + CONVERT(VARCHAR(50),@guid) + ''' AS UNIQUEIDENTIFIER) AS dba_guid, CAST(1 AS INT) AS dba_progupd, ' + @cols + ' INTO {auditDb}..[{tbl}] FROM #del';");
-        sb.AppendLine("        EXEC sp_executesql @sql;");
-        sb.AppendLine($"        SET @sql = 'INSERT INTO {auditDb}..[{tbl}] (dba_tipo_comando,dba_tipo_dato,dba_macchina,dba_utente,dba_data,dba_applicazione,dba_guid,dba_progupd,' + @cols + ') SELECT CAST(''U'' AS CHAR(1)),CAST(''NEW'' AS CHAR(3)),CAST(''' + @host + ''' AS VARCHAR(254)),CAST(''' + @user + ''' AS VARCHAR(254)),CAST(''' + CONVERT(VARCHAR(30),@dt,121) + ''' AS DATETIME),CAST(''' + @app + ''' AS VARCHAR(254)),CAST(''' + CONVERT(VARCHAR(50),@guid) + ''' AS UNIQUEIDENTIFIER),1,' + @cols + ' FROM #ins';");
+        sb.AppendLine($"        SELECT CAST('U' AS CHAR(1)) AS dba_tipo_comando, CAST('OLD' AS CHAR(3)) AS dba_tipo_dato, @host AS dba_macchina, @user AS dba_utente, @dt AS dba_data, @app AS dba_applicazione, @guid AS dba_guid, CAST(1 AS INT) AS dba_progupd, {colList} INTO {auditDb}..[{tbl}] FROM #del;");
+        sb.AppendLine($"        INSERT INTO {auditDb}..[{tbl}] (dba_tipo_comando, dba_tipo_dato, dba_macchina, dba_utente, dba_data, dba_applicazione, dba_guid, dba_progupd, {colList}) SELECT CAST('U' AS CHAR(1)), CAST('NEW' AS CHAR(3)), @host, @user, @dt, @app, @guid, 1, {colList} FROM #ins;");
         sb.AppendLine("    END");
         sb.AppendLine("    ELSE");
-        sb.AppendLine($"        SET @sql = 'INSERT INTO {auditDb}..[{tbl}] (dba_tipo_comando,dba_tipo_dato,dba_macchina,dba_utente,dba_data,dba_applicazione,dba_guid,dba_progupd,' + @cols + ') SELECT CAST(''U'' AS CHAR(1)),CAST(''OLD'' AS CHAR(3)),CAST(''' + @host + ''' AS VARCHAR(254)),CAST(''' + @user + ''' AS VARCHAR(254)),CAST(''' + CONVERT(VARCHAR(30),@dt,121) + ''' AS DATETIME),CAST(''' + @app + ''' AS VARCHAR(254)),CAST(''' + CONVERT(VARCHAR(50),@guid) + ''' AS UNIQUEIDENTIFIER),1,' + @cols + ' FROM #del UNION ALL SELECT CAST(''U'' AS CHAR(1)),CAST(''NEW'' AS CHAR(3)),CAST(''' + @host + ''' AS VARCHAR(254)),CAST(''' + @user + ''' AS VARCHAR(254)),CAST(''' + CONVERT(VARCHAR(30),@dt,121) + ''' AS DATETIME),CAST(''' + @app + ''' AS VARCHAR(254)),CAST(''' + CONVERT(VARCHAR(50),@guid) + ''' AS UNIQUEIDENTIFIER),1,' + @cols + ' FROM #ins';");
-        sb.AppendLine("    EXEC sp_executesql @sql;");
+        sb.AppendLine($"        INSERT INTO {auditDb}..[{tbl}] (dba_tipo_comando, dba_tipo_dato, dba_macchina, dba_utente, dba_data, dba_applicazione, dba_guid, dba_progupd, {colList}) SELECT CAST('U' AS CHAR(1)), CAST('OLD' AS CHAR(3)), @host, @user, @dt, @app, @guid, 1, {colList} FROM #del UNION ALL SELECT CAST('U' AS CHAR(1)), CAST('NEW' AS CHAR(3)), @host, @user, @dt, @app, @guid, 1, {colList} FROM #ins;");
         sb.AppendLine("    DROP TABLE #ins; DROP TABLE #del;");
         sb.AppendLine("END");
         sb.AppendLine("GO");
