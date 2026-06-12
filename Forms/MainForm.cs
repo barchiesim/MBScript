@@ -22,6 +22,7 @@ public class MainForm : Form
     private string _auditFilter = string.Empty;
     private string _auditExclude = string.Empty;
     private bool _defaultConditionalUpdate = false;
+    private string _lastAutoScript = string.Empty;
 
     // Guard: prevents re-entrant async calls
     private bool _busy = false;
@@ -46,6 +47,30 @@ public class MainForm : Form
     private ToolStripStatusLabel lblStatusLoading = null!;
     private SplitContainer splitMain = null!;
     private SplitContainer splitRight = null!;
+    private Panel pnlSearch = null!;
+    private TextBox txtSearch = null!;
+    private Label lblSearchCount = null!;
+    private Panel pnlSearchGen = null!;
+    private TextBox txtSearchGen = null!;
+    private Label lblSearchCountGen = null!;
+
+    // ─── Syntax highlight state ───────────────────────────────────────────────
+    private bool _isHighlighting = false;
+    private System.Windows.Forms.Timer _syntaxTimer = null!;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, bool wParam, int lParam);
+    private const int WM_SETREDRAW = 0x000B;
+
+    private static readonly string _sqlKeywordPattern =
+        @"\b(SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TABLE|INTO|VALUES|SET" +
+        @"|JOIN|ON|AND|OR|NOT|IN|LIKE|ORDER|BY|GROUP|HAVING|AS|DISTINCT|TOP|INNER|LEFT|RIGHT" +
+        @"|OUTER|FULL|CROSS|UNION|ALL|EXISTS|NULL|IS|BETWEEN|WITH|BEGIN|END|GO|USE|IF|ELSE" +
+        @"|DECLARE|EXEC|PROCEDURE|TRIGGER|ENABLE|DISABLE|PRIMARY|KEY|FOREIGN|REFERENCES" +
+        @"|CONSTRAINT|INDEX|VIEW|IDENTITY|DEFAULT|COUNT|SUM|MAX|MIN|AVG|CAST|CONVERT" +
+        @"|ISNULL|COALESCE|CASE|WHEN|THEN|RETURN|NOLOCK|ROLLBACK|COMMIT|TRANSACTION" +
+        @"|CHAR|VARCHAR|NVARCHAR|INT|BIGINT|SMALLINT|DATETIME|DATE|BIT|DECIMAL|FLOAT" +
+        @"|MONEY|UNIQUEIDENTIFIER|VARBINARY|TEXT|NTEXT)\b";
 
     // ─── Constructor ─────────────────────────────────────────────────────────
     public MainForm(SqlService sqlService, DatabaseConfig config)
@@ -204,9 +229,8 @@ public class MainForm : Form
         txtTableSearch.TextChanged += (_, _) => FilterTableList();
         var lblTables = new Label { Text = "Tabelle:", Dock = DockStyle.Top, Height = 20, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) };
         lstTables = new ListBox { Dock = DockStyle.Fill, Font = new Font("Courier New", 7.5f) };
-        lstTables.DoubleClick += async (_, _) => await GuardAsync(LoadTableStructureAsync);
-        // Aggiorna lo script anche al singolo click/selezione
-        lstTables.SelectedIndexChanged += async (_, _) => await GuardAsync(LoadTableStructureAsync);
+        lstTables.DoubleClick += (_, _) => LoadTableStructure();
+        lstTables.SelectedIndexChanged += (_, _) => LoadTableStructure();
 
         pnlLeft.Controls.Add(lstTables);
         pnlLeft.Controls.Add(lblTables);
@@ -239,6 +263,32 @@ public class MainForm : Form
 
         var pnlSql = new Panel { Dock = DockStyle.Fill };
         var lblSql = new Label { Text = "Script SQL:", Dock = DockStyle.Top, Height = 20, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) };
+
+        // ── Barra di ricerca (Ctrl+F) ──────────────────────────────────────
+        pnlSearch = new Panel { Dock = DockStyle.Top, Height = 26, Visible = false, BackColor = SystemColors.Info, Padding = new Padding(2) };
+        txtSearch = new TextBox { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 8.5f) };
+        lblSearchCount = new Label { Dock = DockStyle.Right, Width = 70, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 7.5f) };
+        Button btnFindNext = new Button { Dock = DockStyle.Right, Width = 26, Text = "▼", FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 7f) };
+        Button btnFindPrev = new Button { Dock = DockStyle.Right, Width = 26, Text = "▲", FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 7f) };
+        Button btnCloseSearch = new Button { Dock = DockStyle.Right, Width = 26, Text = "✕", FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 7f) };
+        btnFindNext.Click += (_, _) => FindInRtb(rtbSqlScript, txtSearch, lblSearchCount, forward: true);
+        btnFindPrev.Click += (_, _) => FindInRtb(rtbSqlScript, txtSearch, lblSearchCount, forward: false);
+        btnCloseSearch.Click += (_, _) => CloseSearchRtb(pnlSearch, lblSearchCount, rtbSqlScript);
+        txtSearch.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter) { e.Handled = true; FindInRtb(rtbSqlScript, txtSearch, lblSearchCount, forward: true); }
+            else if (e.KeyCode == Keys.Escape) { e.Handled = true; CloseSearchRtb(pnlSearch, lblSearchCount, rtbSqlScript); }
+            else if (e.Shift && e.KeyCode == Keys.F3) { e.Handled = true; FindInRtb(rtbSqlScript, txtSearch, lblSearchCount, forward: false); }
+        };
+        txtSearch.TextChanged += (_, _) => FindInRtb(rtbSqlScript, txtSearch, lblSearchCount, forward: true, resetPos: true);
+        // ordine di aggiunta: destra per prima (z-order inverso per Dock.Right)
+        pnlSearch.Controls.Add(txtSearch);
+        pnlSearch.Controls.Add(lblSearchCount);
+        pnlSearch.Controls.Add(btnCloseSearch);
+        pnlSearch.Controls.Add(btnFindNext);
+        pnlSearch.Controls.Add(btnFindPrev);
+
+        // ── Editor SQL ─────────────────────────────────────────────────────
         rtbSqlScript = new RichTextBox
         {
             Dock = DockStyle.Fill,
@@ -246,17 +296,25 @@ public class MainForm : Form
             WordWrap = false,
             ScrollBars = RichTextBoxScrollBars.Both
         };
+
+        // Syntax highlight con debounce 350ms
+        _syntaxTimer = new System.Windows.Forms.Timer { Interval = 350 };
+        _syntaxTimer.Tick += (_, _) => { _syntaxTimer.Stop(); ApplySyntaxHighlight(rtbSqlScript); };
+        rtbSqlScript.TextChanged += (_, _) => { if (!_isHighlighting) { _syntaxTimer.Stop(); _syntaxTimer.Start(); } };
+
         rtbSqlScript.KeyDown += (_, e) =>
         {
-            if (e.Control && e.KeyCode == Keys.Enter)
-            {
-                e.Handled = true;
-                _ = GuardAsync(ExecuteQueryAsync);
-            }
+            if (e.Control && e.KeyCode == Keys.Enter) { e.Handled = true; _ = GuardAsync(ExecuteQueryAsync); }
+            else if (e.Control && e.KeyCode == Keys.F) { e.Handled = true; ShowSearchRtb(pnlSearch, txtSearch); }
+            else if (e.KeyCode == Keys.F3) { e.Handled = true; FindInRtb(rtbSqlScript, txtSearch, lblSearchCount, forward: !e.Shift); }
+            else if (e.KeyCode == Keys.Escape && pnlSearch.Visible) { e.Handled = true; CloseSearchRtb(pnlSearch, lblSearchCount, rtbSqlScript); }
         };
-        // Aggiungi prima il label (dock top) poi il controllo fill per evitare che il controllo riempia l'intera area
+
+        // Ordine aggiunta: lblSql (Top) → pnlSearch (Top, nascosto) → rtbSqlScript (Fill)
         pnlSql.Controls.Add(lblSql);
+        pnlSql.Controls.Add(pnlSearch);
         pnlSql.Controls.Add(rtbSqlScript);
+        rtbSqlScript.BringToFront(); // garantisce interattività fin dall'avvio
         splitRight.Panel1.Controls.Add(pnlSql);
 
         // ── Tab control ───────────────────────────────────────────────────
@@ -281,6 +339,31 @@ public class MainForm : Form
             AutoGenerateColumns = true
         };
 
+        // ── Tab Testo: pannello con barra ricerca + editor generato ──────────
+        Panel pnlGen = new Panel { Dock = DockStyle.Fill };
+
+        pnlSearchGen = new Panel { Dock = DockStyle.Top, Height = 26, Visible = false, BackColor = SystemColors.Info, Padding = new Padding(2) };
+        txtSearchGen = new TextBox { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 8.5f) };
+        lblSearchCountGen = new Label { Dock = DockStyle.Right, Width = 70, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 7.5f) };
+        Button btnGenFindNext = new Button { Dock = DockStyle.Right, Width = 26, Text = "▼", FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 7f) };
+        Button btnGenFindPrev = new Button { Dock = DockStyle.Right, Width = 26, Text = "▲", FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 7f) };
+        Button btnGenClose = new Button { Dock = DockStyle.Right, Width = 26, Text = "✕", FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 7f) };
+        btnGenFindNext.Click += (_, _) => FindInRtb(rtbGeneratedScript, txtSearchGen, lblSearchCountGen, forward: true);
+        btnGenFindPrev.Click += (_, _) => FindInRtb(rtbGeneratedScript, txtSearchGen, lblSearchCountGen, forward: false);
+        btnGenClose.Click += (_, _) => CloseSearchRtb(pnlSearchGen, lblSearchCountGen, rtbGeneratedScript);
+        txtSearchGen.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter) { e.Handled = true; FindInRtb(rtbGeneratedScript, txtSearchGen, lblSearchCountGen, forward: true); }
+            else if (e.KeyCode == Keys.Escape) { e.Handled = true; CloseSearchRtb(pnlSearchGen, lblSearchCountGen, rtbGeneratedScript); }
+            else if (e.Shift && e.KeyCode == Keys.F3) { e.Handled = true; FindInRtb(rtbGeneratedScript, txtSearchGen, lblSearchCountGen, forward: false); }
+        };
+        txtSearchGen.TextChanged += (_, _) => FindInRtb(rtbGeneratedScript, txtSearchGen, lblSearchCountGen, forward: true, resetPos: true);
+        pnlSearchGen.Controls.Add(txtSearchGen);
+        pnlSearchGen.Controls.Add(lblSearchCountGen);
+        pnlSearchGen.Controls.Add(btnGenClose);
+        pnlSearchGen.Controls.Add(btnGenFindNext);
+        pnlSearchGen.Controls.Add(btnGenFindPrev);
+
         rtbGeneratedScript = new RichTextBox
         {
             Dock = DockStyle.Fill,
@@ -291,6 +374,17 @@ public class MainForm : Form
             DetectUrls = false
         };
 
+        rtbGeneratedScript.KeyDown += (_, e) =>
+        {
+            if (e.Control && e.KeyCode == Keys.F) { e.Handled = true; ShowSearchRtb(pnlSearchGen, txtSearchGen); }
+            else if (e.KeyCode == Keys.F3) { e.Handled = true; FindInRtb(rtbGeneratedScript, txtSearchGen, lblSearchCountGen, forward: !e.Shift); }
+            else if (e.KeyCode == Keys.Escape && pnlSearchGen.Visible) { e.Handled = true; CloseSearchRtb(pnlSearchGen, lblSearchCountGen, rtbGeneratedScript); }
+        };
+
+        pnlGen.Controls.Add(pnlSearchGen);
+        pnlGen.Controls.Add(rtbGeneratedScript);
+        rtbGeneratedScript.BringToFront();
+
         lstMessages = new ListBox
         {
             Dock = DockStyle.Fill,
@@ -299,7 +393,7 @@ public class MainForm : Form
         };
 
         tabGrid.Controls.Add(dgvResults);
-        tabText.Controls.Add(rtbGeneratedScript);
+        tabText.Controls.Add(pnlGen);
         tabMessages.Controls.Add(lstMessages);
         tabResults.TabPages.AddRange(new[] { tabGrid, tabText, tabMessages });
         splitRight.Panel2.Controls.Add(tabResults);
@@ -393,39 +487,35 @@ public class MainForm : Form
         lstTables.EndUpdate();
     }
 
-    private async Task LoadTableStructureAsync()
+    /// <summary>
+    /// Aggiorna l'editor SQL con la SELECT della tabella selezionata nel ListBox.
+    /// Carica chiavi e colonne identity per la generazione degli script.
+    /// </summary>
+    /// <summary>
+    /// Aggiorna l'editor SQL con la SELECT della tabella selezionata.
+    /// Sincrono: nessun I/O. Chiavi e identity vengono caricate in GenerateScriptAsync quando servono.
+    /// </summary>
+    private void LoadTableStructure()
     {
         if (lstTables.SelectedItem is not string item) return;
-        var m = Regex.Match(item, @"\[([^\]]+)\]\.\[([^\]]+)\]");
+        Regex rx = new Regex(@"\[([^\]]+)\]\.\[([^\]]+)\]");
+        Match m = rx.Match(item);
         if (!m.Success) return;
-        var schema = m.Groups[1].Value;
-        var tbl = m.Groups[2].Value;
-        var db = cmbDatabases.SelectedItem as string ?? _config.Database;
+        string schema = m.Groups[1].Value;
+        string tbl = m.Groups[2].Value;
 
         _selectedTable = new TableInfo { TableSchema = schema, TableName = tbl, TableType = "BASE TABLE" };
-        SetLoading(true);
-        try
-        {
-            _keyColumns = await _dbExplorer.GetTableKeyColumnsAsync(db, schema, tbl);
-            _identityColumns = new HashSet<string>(await _dbExplorer.GetIdentityColumnsAsync(db, schema, tbl), StringComparer.OrdinalIgnoreCase);
-            var scriptText = $"SELECT * FROM [{schema}].[{tbl}]";
-            Action apply = () =>
-            {
-                // Replace the SQL editor content when selecting a table
-                rtbSqlScript.Text = scriptText;
-                rtbSqlScript.SelectionStart = 0;
-                rtbSqlScript.ScrollToCaret();
-                rtbSqlScript.BackColor = SystemColors.Window;
-                rtbSqlScript.ForeColor = SystemColors.WindowText;
-                rtbSqlScript.Visible = true;
-                rtbSqlScript.BringToFront();
-                rtbSqlScript.Refresh();
-            };
+        _keyColumns = new List<string>();
+        _identityColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            if (rtbSqlScript.InvokeRequired) rtbSqlScript.Invoke(apply);
-            else apply();
-        }
-        finally { SetLoading(false); }
+        string scriptText = $"SELECT * FROM [{schema}].[{tbl}]";
+        _lastAutoScript = scriptText;
+
+        rtbSqlScript.Text = scriptText;
+        rtbSqlScript.SelectionStart = 0;
+        rtbSqlScript.ScrollToCaret();
+        rtbSqlScript.BringToFront();
+        rtbSqlScript.Refresh();
     }
 
     // ─── Query execution ─────────────────────────────────────────────────────
@@ -477,7 +567,7 @@ public class MainForm : Form
                 dgvResults.DataSource = null;
                 AddMessage("✅ Script eseguito con successo (nessun risultato)");
                 if (!string.IsNullOrEmpty(specialOp)) AddMessage($"▶ Fine esecuzione operazione: {specialOp}");
-                tabResults.SelectedTab = tabMessages;
+                tabResults.SelectedTab = tabGrid;
             }
             else
             {
@@ -548,22 +638,24 @@ public class MainForm : Form
         SetLoading(true);
         try
         {
+            // L'SQL nel box ha sempre la precedenza sulla tabella selezionata nella treeview.
+            // Se il FROM dell'SQL corrente indica una tabella diversa da _selectedTable, aggiorna _selectedTable.
+            Match sqlMatch = Regex.Match(rtbSqlScript.Text, @"FROM\s+(?:\[?(\w+)\]?\.)?\[?(\w+)\]?", RegexOptions.IgnoreCase);
+            if (sqlMatch.Success)
+            {
+                string sch = sqlMatch.Groups[1].Success ? sqlMatch.Groups[1].Value : "dbo";
+                string tbl = sqlMatch.Groups[2].Value;
+                bool differs = _selectedTable is null
+                    || !string.Equals(_selectedTable.TableName, tbl, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(_selectedTable.TableSchema, sch, StringComparison.OrdinalIgnoreCase);
+                if (differs)
+                    _selectedTable = new TableInfo { TableSchema = sch, TableName = tbl, TableType = "BASE TABLE" };
+            }
+
             if (_selectedTable is not null)
             {
                 _keyColumns = await _dbExplorer.GetTableKeyColumnsAsync(db, _selectedTable.TableSchema, _selectedTable.TableName);
                 _identityColumns = new HashSet<string>(await _dbExplorer.GetIdentityColumnsAsync(db, _selectedTable.TableSchema, _selectedTable.TableName), StringComparer.OrdinalIgnoreCase);
-            }
-            else
-            {
-                var mx = Regex.Match(rtbSqlScript.Text, @"FROM\s+(?:\[?(\w+)\]?\.)?\[?(\w+)\]?", RegexOptions.IgnoreCase);
-                if (mx.Success)
-                {
-                    var sch = mx.Groups[1].Success ? mx.Groups[1].Value : "dbo";
-                    var tbl = mx.Groups[2].Value;
-                    _selectedTable = new TableInfo { TableSchema = sch, TableName = tbl, TableType = "BASE TABLE" };
-                    _keyColumns = await _dbExplorer.GetTableKeyColumnsAsync(db, sch, tbl);
-                    _identityColumns = new HashSet<string>(await _dbExplorer.GetIdentityColumnsAsync(db, sch, tbl), StringComparer.OrdinalIgnoreCase);
-                }
             }
         }
         finally { SetLoading(false); }
@@ -787,9 +879,8 @@ public class MainForm : Form
             }
             else
             {
-                // Fallback: no key columns provided, perform plain delete
-                sb.AppendLine($"DELETE FROM {fn}");
-                sb.AppendLine($"WHERE {WhereClause(keyCols, row)}");
+                // Fallback: nessuna colonna chiave disponibile, impossibile generare un DELETE sicuro
+                sb.AppendLine($"-- ATTENZIONE: nessuna colonna chiave per DELETE su {fn}");
             }
             sb.AppendLine();
         }
@@ -835,8 +926,32 @@ public class MainForm : Form
                 tableColumns[tbl] = colRes.Success && colRes.Data is not null ? colRes.Data : new List<ColumnInfo>();
             }
 
-            SetSqlScript(AuditScriptBuilder.BuildInitScript(db, auditDb, tableColumns));
-            AddMessage($"Fine - Creazione script: Inizializzazione/Reset Audit_UPD. Script generato: {tables.Count} tabelle + {tables.Count * 3} trigger.");
+            var script = AuditScriptBuilder.BuildInitScript(db, auditDb, tableColumns);
+            SetSqlScript(script);
+            AddMessage($"Script generato: {tables.Count} tabelle + {tables.Count * 3} trigger.");
+
+            var answer = MessageBox.Show(
+                $"Script generato per {tables.Count} tabelle.\n\nEseguire direttamente sul database '{db}'?",
+                "Esegui script audit",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+            if (answer == DialogResult.Yes)
+            {
+                AddMessage("Esecuzione script in corso...");
+                var execResult = await _sql.ExecuteScriptAsync(script);
+                if (execResult.Success)
+                {
+                    AddMessage($"✅ Script eseguito con successo.");
+                    SetSqlScript(string.Empty);
+                    rtbGeneratedScript?.Clear();
+                }
+                else
+                    AddMessage($"❌ Errore: {execResult.Error}");
+            }
+            else
+            {
+                AddMessage("Script pronto nel pannello SQL — eseguilo manualmente quando vuoi.");
+            }
         }
         finally { SetLoading(false); }
     }
@@ -1054,6 +1169,7 @@ public class MainForm : Form
         if (rtbSqlScript is null) return;
         Action apply = () =>
         {
+            _lastAutoScript = text;
             rtbSqlScript.Text = text;
             rtbSqlScript.SelectionStart = 0;
             rtbSqlScript.ScrollToCaret();
@@ -1068,6 +1184,121 @@ public class MainForm : Form
     {
         lstMessages.Items.Add($"[{DateTime.Now:HH:mm:ss}] {msg}");
         lstMessages.TopIndex = lstMessages.Items.Count - 1;
+    }
+
+    // ─── Syntax highlight ─────────────────────────────────────────────────────
+
+    private void ApplySyntaxHighlight(RichTextBox rtb)
+    {
+        if (_isHighlighting || rtb == null) return;
+        _isHighlighting = true;
+
+        int selStart = rtb.SelectionStart;
+        int selLen = rtb.SelectionLength;
+        string text = rtb.Text;
+
+        SendMessage(rtb.Handle, WM_SETREDRAW, false, 0);
+        try
+        {
+            rtb.SelectAll();
+            rtb.SelectionColor = SystemColors.WindowText;
+
+            foreach (Match m in Regex.Matches(text, @"--[^\r\n]*"))
+            {
+                rtb.Select(m.Index, m.Length);
+                rtb.SelectionColor = Color.DarkGreen;
+            }
+
+            foreach (Match m in Regex.Matches(text, @"'(?:[^']|'')*'"))
+            {
+                rtb.Select(m.Index, m.Length);
+                rtb.SelectionColor = Color.DarkRed;
+            }
+
+            foreach (Match m in Regex.Matches(text, _sqlKeywordPattern, RegexOptions.IgnoreCase))
+            {
+                rtb.Select(m.Index, m.Length);
+                if (rtb.SelectionColor != Color.DarkGreen && rtb.SelectionColor != Color.DarkRed)
+                    rtb.SelectionColor = Color.Blue;
+            }
+        }
+        finally
+        {
+            rtb.SelectionStart = selStart;
+            rtb.SelectionLength = selLen;
+            rtb.SelectionColor = SystemColors.WindowText;
+            SendMessage(rtb.Handle, WM_SETREDRAW, true, 0);
+            rtb.Invalidate();
+            _isHighlighting = false;
+        }
+    }
+
+    // ─── Ricerca generica su RichTextBox ─────────────────────────────────────
+
+    private static void ShowSearchRtb(Panel pnl, TextBox txt)
+    {
+        pnl.Visible = true;
+        txt.Focus();
+        txt.SelectAll();
+    }
+
+    private static void CloseSearchRtb(Panel pnl, Label lblCount, RichTextBox rtb)
+    {
+        pnl.Visible = false;
+        lblCount.Text = string.Empty;
+        rtb.Focus();
+    }
+
+    private static void FindInRtb(RichTextBox rtb, TextBox txtSearch, Label lblCount, bool forward, bool resetPos = false)
+    {
+        string needle = txtSearch.Text;
+        if (string.IsNullOrEmpty(needle))
+        {
+            lblCount.Text = string.Empty;
+            return;
+        }
+
+        string haystack = rtb.Text;
+        MatchCollection all = Regex.Matches(haystack, Regex.Escape(needle), RegexOptions.IgnoreCase);
+        if (all.Count == 0)
+        {
+            lblCount.Text = "Non trovato";
+            lblCount.ForeColor = Color.Red;
+            return;
+        }
+
+        lblCount.ForeColor = SystemColors.WindowText;
+
+        int startFrom = resetPos ? 0 : (forward
+            ? rtb.SelectionStart + rtb.SelectionLength
+            : rtb.SelectionStart - 1);
+
+        int idx;
+        if (forward)
+        {
+            idx = haystack.IndexOf(needle, Math.Max(0, startFrom), StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) idx = haystack.IndexOf(needle, 0, StringComparison.OrdinalIgnoreCase);
+        }
+        else
+        {
+            int backFrom = Math.Max(0, startFrom);
+            idx = backFrom > 0 ? haystack.LastIndexOf(needle, backFrom, StringComparison.OrdinalIgnoreCase) : -1;
+            if (idx < 0) idx = haystack.LastIndexOf(needle, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (idx >= 0)
+        {
+            rtb.Select(idx, needle.Length);
+            rtb.ScrollToCaret();
+        }
+
+        int current = 0;
+        for (int i = 0; i < all.Count; i++)
+        {
+            if (all[i].Index == idx) { current = i + 1; break; }
+        }
+
+        lblCount.Text = $"{current}/{all.Count}";
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)

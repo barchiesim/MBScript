@@ -146,6 +146,25 @@ public class SqlService : IDisposable
         catch (Exception ex) { return SqlResult<int>.Fail(ex.Message); }
     }
 
+    public async Task<SqlResult<int>> ExecuteScriptAsync(string script)
+    {
+        try
+        {
+            EnsureConnected();
+            var batches = SplitSqlBatches(script);
+            int total = 0;
+            foreach (var batch in batches)
+            {
+                if (string.IsNullOrWhiteSpace(batch)) continue;
+                await using var cmd = new SqlCommand(batch, _connection);
+                cmd.CommandTimeout = 600;
+                total += await cmd.ExecuteNonQueryAsync();
+            }
+            return SqlResult<int>.Ok(total, total);
+        }
+        catch (Exception ex) { return SqlResult<int>.Fail(ex.Message); }
+    }
+
     public async Task<ServerInfo?> GetServerInfoAsync()
     {
         const string q = @"SELECT @@SERVERNAME AS ServerName,
