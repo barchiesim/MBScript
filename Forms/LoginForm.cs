@@ -109,6 +109,16 @@ public class LoginForm : Form
 
         if (ok)
         {
+            try
+            {
+                AuditSettings saved = SettingsService.LoadAuditSettings();
+                saved.LastServer = config.Server;
+                saved.LastDatabase = config.Database;
+                saved.LastUser = config.IntegratedSecurity ? "" : config.User;
+                SettingsService.SaveAuditSettings(saved);
+            }
+            catch { }
+
             var main = new MainForm(sqlSvc, config);
             main.Show();
             Hide();

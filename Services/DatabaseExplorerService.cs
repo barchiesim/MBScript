@@ -181,7 +181,7 @@ public class DatabaseExplorerService
 
         var cols = colsResult.Data;
         var sb   = new StringBuilder();
-        sb.AppendLine($"-- INSERT script for [{schema}].[{tableName}]");
+        sb.AppendLine($"-- INSERT script for {schema}.{tableName}");
         sb.AppendLine($"-- Generated: {DateTime.Now:O}");
         sb.AppendLine($"-- Rows: {dataResult.Data.Count}");
         sb.AppendLine();
@@ -193,16 +193,16 @@ public class DatabaseExplorerService
                 var where = string.Join(" AND ", cols.Where(c => pks.Contains(c.ColumnName)).Select(c =>
                 {
                     var v = row.GetValueOrDefault(c.ColumnName);
-                    return $"[{c.ColumnName}] {SqlService.SqlFmtFieldWhere(v, SqlService.MapSqlDataType(c.DataType))}";
+                    return $"{c.ColumnName} {SqlService.SqlFmtFieldWhere(v, SqlService.MapSqlDataType(c.DataType))}";
                 }));
-                sb.AppendLine($"IF NOT EXISTS( SELECT 1 FROM [{schema}].[{tableName}] WHERE {where} )");
+                sb.AppendLine($"IF NOT EXISTS( SELECT 1 FROM {schema}.{tableName} WHERE {where} )");
                 sb.AppendLine("BEGIN");
             }
-            var colNames = string.Join(", ", cols.Select(c => $"[{c.ColumnName}]"));
+            var colNames = string.Join(", ", cols.Select(c => c.ColumnName));
             var values   = string.Join(", ", cols.Select(c =>
                 SqlService.SqlFmtField(row.GetValueOrDefault(c.ColumnName), SqlService.MapSqlDataType(c.DataType))));
             string p = pks.Count > 0 ? "\t" : "";
-            sb.AppendLine($"{p}INSERT INTO [{schema}].[{tableName}] ({colNames})");
+            sb.AppendLine($"{p}INSERT INTO {schema}.{tableName} ({colNames})");
             sb.AppendLine($"{p}SELECT {values}");
             if (pks.Count > 0) sb.AppendLine("END");
             sb.AppendLine();

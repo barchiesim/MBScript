@@ -45,6 +45,8 @@ public class MainForm : Form
     private ToolStripStatusLabel lblStatusDb = null!;
     private ToolStripStatusLabel lblStatusUser = null!;
     private ToolStripStatusLabel lblStatusLoading = null!;
+    private ToolStripStatusLabel lblStatusLine = null!;
+    private ToolStripStatusLabel lblStatusCol = null!;
     private SplitContainer splitMain = null!;
     private SplitContainer splitRight = null!;
     private Panel pnlSearch = null!;
@@ -204,6 +206,15 @@ public class MainForm : Form
         Controls.Add(toolStrip);
     }
 
+    private void UpdateLineCol(RichTextBox rtb)
+    {
+        int pos  = rtb.SelectionStart;
+        int line = rtb.GetLineFromCharIndex(pos) + 1;
+        int col  = pos - rtb.GetFirstCharIndexFromLine(line - 1) + 1;
+        lblStatusLine.Text = $"Ln {line}";
+        lblStatusCol.Text  = $"Col {col}";
+    }
+
     private void BuildStatusBar()
     {
         statusBar = new StatusStrip { Dock = DockStyle.Bottom };
@@ -211,7 +222,9 @@ public class MainForm : Form
         lblStatusDb = new ToolStripStatusLabel($"Database: {_config.Database}");
         lblStatusUser = new ToolStripStatusLabel($"User: {(_config.IntegratedSecurity ? "Windows Auth" : _config.User)}");
         lblStatusLoading = new ToolStripStatusLabel("") { Spring = true, TextAlign = ContentAlignment.MiddleRight };
-        statusBar.Items.AddRange(new ToolStripItem[] { lblStatusServer, new ToolStripSeparator(), lblStatusDb, new ToolStripSeparator(), lblStatusUser, lblStatusLoading });
+        lblStatusLine = new ToolStripStatusLabel("Ln 1") { BorderSides = ToolStripStatusLabelBorderSides.Left, AutoSize = false, Width = 55, TextAlign = ContentAlignment.MiddleCenter };
+        lblStatusCol  = new ToolStripStatusLabel("Col 1") { BorderSides = ToolStripStatusLabelBorderSides.Left, AutoSize = false, Width = 55, TextAlign = ContentAlignment.MiddleCenter };
+        statusBar.Items.AddRange(new ToolStripItem[] { lblStatusServer, new ToolStripSeparator(), lblStatusDb, new ToolStripSeparator(), lblStatusUser, lblStatusLoading, lblStatusLine, lblStatusCol });
         Controls.Add(statusBar);
     }
 
@@ -301,6 +314,7 @@ public class MainForm : Form
         _syntaxTimer = new System.Windows.Forms.Timer { Interval = 350 };
         _syntaxTimer.Tick += (_, _) => { _syntaxTimer.Stop(); ApplySyntaxHighlight(rtbSqlScript); };
         rtbSqlScript.TextChanged += (_, _) => { if (!_isHighlighting) { _syntaxTimer.Stop(); _syntaxTimer.Start(); } };
+        rtbSqlScript.SelectionChanged += (_, _) => UpdateLineCol(rtbSqlScript);
 
         rtbSqlScript.KeyDown += (_, e) =>
         {
@@ -374,6 +388,7 @@ public class MainForm : Form
             DetectUrls = false
         };
 
+        rtbGeneratedScript.SelectionChanged += (_, _) => UpdateLineCol(rtbGeneratedScript);
         rtbGeneratedScript.KeyDown += (_, e) =>
         {
             if (e.Control && e.KeyCode == Keys.F) { e.Handled = true; ShowSearchRtb(pnlSearchGen, txtSearchGen); }
@@ -767,8 +782,8 @@ public class MainForm : Form
 
     private static string FullName(TableInfo t) =>
         t.TableSchema.ToLower() == "dbo"
-            ? $"[{t.TableName}]"
-            : $"[{t.TableSchema}].[{t.TableName}]";
+            ? t.TableName
+            : $"{t.TableSchema}.{t.TableName}";
 
     private static string WhereClause(List<string> keys, Dictionary<string, object?> row) =>
         string.Join(" AND ", keys.Select(c =>
@@ -930,28 +945,16 @@ public class MainForm : Form
             SetSqlScript(script);
             AddMessage($"Script generato: {tables.Count} tabelle + {tables.Count * 3} trigger.");
 
-            var answer = MessageBox.Show(
-                $"Script generato per {tables.Count} tabelle.\n\nEseguire direttamente sul database '{db}'?",
-                "Esegui script audit",
-                MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-
-            if (answer == DialogResult.Yes)
+            AddMessage("Esecuzione script in corso...");
+            var execResult = await _sql.ExecuteScriptAsync(script);
+            if (execResult.Success)
             {
-                AddMessage("Esecuzione script in corso...");
-                var execResult = await _sql.ExecuteScriptAsync(script);
-                if (execResult.Success)
-                {
-                    AddMessage($"✅ Script eseguito con successo.");
-                    SetSqlScript(string.Empty);
-                    rtbGeneratedScript?.Clear();
-                }
-                else
-                    AddMessage($"❌ Errore: {execResult.Error}");
+                AddMessage($"✅ Script eseguito con successo.");
+                SetSqlScript(string.Empty);
+                rtbGeneratedScript?.Clear();
             }
             else
-            {
-                AddMessage("Script pronto nel pannello SQL — eseguilo manualmente quando vuoi.");
-            }
+                AddMessage($"❌ Errore: {execResult.Error}");
         }
         finally { SetLoading(false); }
     }
@@ -1012,8 +1015,6 @@ public class MainForm : Form
                 StringComparer.OrdinalIgnoreCase);
 
             sb.AppendLine($"-- Script Audit  db:{originDb}  audit:{auditDb}  {DateTime.Now}");
-            sb.AppendLine($"USE [{originDb}];");
-            sb.AppendLine("GO");
             sb.AppendLine();
 
             foreach (var tbl in tableNames)
@@ -1116,13 +1117,12 @@ public class MainForm : Form
                         sb.AppendLine("END");
                     }
 
-                    sb.AppendLine(); sb.AppendLine("GO"); sb.AppendLine();
+                    sb.AppendLine();
                     totalCmds++;
                 }
             }
 
             sb.AppendLine($"-- Comandi totali: {totalCmds}");
-            SetSqlScript(sb.ToString());
             rtbGeneratedScript.Text = sb.ToString();
             tabResults.SelectedTab = tabText;
             AddMessage($"✅ Script generato: {totalCmds} comandi da {tableNames.Count} tabelle");
