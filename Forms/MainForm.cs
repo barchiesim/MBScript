@@ -346,11 +346,29 @@ public class MainForm : Form
             MultiSelect = true,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
             Font = new Font("Segoe UI", 7.5f),
-            RowHeadersWidth = 30,
+            RowHeadersWidth = 50,
             ScrollBars = ScrollBars.Both,
             AllowUserToResizeColumns = true,
             ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize,
-            AutoGenerateColumns = true
+            AutoGenerateColumns = true,
+            EnableHeadersVisualStyles = false,
+            ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
+            {
+                BackColor = Color.FromArgb(30, 80, 140),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+                Alignment = DataGridViewContentAlignment.MiddleLeft,
+                SelectionBackColor = Color.FromArgb(30, 80, 140),
+                SelectionForeColor = Color.White
+            }
+        };
+        dgvResults.RowPostPaint += (_, e) =>
+        {
+            string rowNum = (e.RowIndex + 1).ToString();
+            SizeF size = e.Graphics.MeasureString(rowNum, dgvResults.Font);
+            float x = e.RowBounds.Left + (dgvResults.RowHeadersWidth - size.Width) / 2;
+            float y = e.RowBounds.Top + (e.RowBounds.Height - size.Height) / 2;
+            e.Graphics.DrawString(rowNum, dgvResults.Font, SystemBrushes.ControlText, x, y);
         };
 
         // ── Tab Testo: pannello con barra ricerca + editor generato ──────────
