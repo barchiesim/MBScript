@@ -1,0 +1,710 @@
+================================================================================
+  ANALISI TECNICA — PBScriptNew
+  Applicazione Windows Forms (.NET 8 / C# 12) per SQL Server
+  Data analisi: 2026-06-26
+================================================================================
+
+
+1. PANORAMICA GENERALE
+================================================================================
+
+PBScriptNew è uno strumento desktop per sviluppatori e DBA che lavorano su SQL
+Server. Le funzioni principali sono:
+
+  a) Esplorare la struttura di un database (tabelle, colonne, chiavi, indici).
+  b) Eseguire query SQL con supporto batch (istruzione GO).
+  c) Generare script DML (INSERT / UPDATE / DELETE) idempotenti a partire dai
+     risultati di una SELECT.
+  d) Installare, gestire e interrogare un sistema di audit basato su trigger DML
+     che traccia ogni modifica su un database parallelo ({db}_UPD).
+  e) Produrre script di rilascio pronti all'uso leggendo i dati dal db audit.
+
+Tecnologie: .NET 8, Windows Forms, Microsoft.Data.SqlClient,
+            Microsoft.Extensions.Configuration, System.Text.Json.
+
+
+2. STRUTTURA DEL PROGETTO
+================================================================================
+
+  Program.cs               Entrypoint (4 righe)
+  Config/
+    GlobalConfig.cs        Singleton di configurazione
+  Forms/
+    LoginForm.cs           Autenticazione
+    MainForm.cs            Interfaccia principale (1340 righe)
+    ColumnSelectorDialog.cs  Selezione colonne per script DML
+    AuditFilterDialog.cs   Configurazione filtri audit
+  Services/
+    SqlService.cs          Connessione, query, formattazione valori SQL
+    DatabaseExplorerService.cs  Metadati DB
+    AuditScriptBuilder.cs  Generazione script trigger (static)
+    SettingsService.cs     Persistenza JSON (static)
+  Models/
+    SqlResult.cs           Wrapper risultato operazioni
+    DatabaseConfig.cs      Parametri connessione
+    AuditSettings.cs       Impostazioni persistenti
+    DatabaseModels.cs      DTO metadati (table, column, key, index, …)
+    ApplicationOptions.cs  Opzioni da appsettings.json
+
+
+3. AVVIO DELL'APPLICAZIONE
+================================================================================
+
+Program.cs:
+  Application.EnableVisualStyles();
+  Application.SetCompatibleTextRenderingDefault(false);
+  Application.SetHighDpiMode(HighDpiMode.SystemAware);
+  Application.Run(new LoginForm());
+
+Non esiste un container DI. Tutti gli oggetti vengono istanziati e connessi
+manualmente nel codice.
+
+GlobalConfig (singleton thread-safe, double-checked locking):
+  - Legge appsettings.json con ConfigurationBuilder.
+  - Sovrascrive ogni chiave con le variabili d'ambiente corrispondenti
+    (SQL_SERVER, SQL_USER, SQL_PASSWORD, SQL_DATABASE, INTEGRATED_SECURITY).
+  - Produce DatabaseConfig e ApplicationOptions disponibili globalmente.
+  - ColorSyntax è true per default se non specificato.
+
+
+4. AUTENTICAZIONE E CONNESSIONE (LoginForm + SqlService)
+================================================================================
+
+LoginForm all'avvio:
+  - Legge GlobalConfig.DbConfig per i valori di default.
+  - Sovrascrive con l'ultima connessione salvata (SettingsService.LoadAuditSettings):
+    LastServer, LastDatabase, LastUser.
+  - Presenta due modalità: SQL Server Auth (User+Password) e Windows Auth.
+  - I campi User/Password vengono abilitati o disabilitati al cambio radio button.
+
+Al click "Connetti":
+  1. Costruisce DatabaseConfig dai campi UI.
+  2. Istanzia SqlService, chiama ConnectAsync(config).
+  3. SqlService costruisce SqlConnectionStringBuilder:
+       DataSource = Server
+       InitialCatalog = Database
+       Encrypt = false, TrustServerCertificate = true, ConnectTimeout = 30s
+       Se IntegratedSecurity → IntegratedSecurity = true
+       Altrimenti → UserID + Password
+  4. Apre SqlConnection asincrono.
+  5. Se OK: salva LastServer/LastDatabase/LastUser in settings, istanzia
+     MainForm(sqlSvc, config), la mostra, nasconde LoginForm.
+     Quando MainForm viene chiusa, LoginForm si chiude a sua volta.
+  6. Se fallisce: mostra messaggio di errore, riabilita il pulsante, dispone SqlService.
+
+SqlService.IsConnected:
+  Controlla _connection?.State == ConnectionState.Open.
+  Tutti i metodi chiamano EnsureConnected() che lancia InvalidOperationException
+  se non connesso (catturata da GuardAsync in MainForm).
+
+
+5. INTERFACCIA PRINCIPALE (MainForm)
+================================================================================
+
+5.1 LAYOUT
+----------
+Il form (1200×800 min 800×600) è organizzato in:
+
+  ToolStrip (alto)
+    [▶ Esegui] [📝 Script ▼] [📋 Audit ▼] [⬅ Logout]
+
+  SplitContainer orizzontale (splitMain):
+    Panel1 (sx, ~250px): selezione database + ricerca + lista tabelle
+    Panel2 (dx): SplitContainer verticale (splitRight)
+      Panel1 (alto, ~180px): editor SQL (rtbSqlScript) + barra ricerca Ctrl+F
+      Panel2 (basso): TabControl con 3 tab:
+        "Griglia"   → DataGridView (dgvResults)
+        "Testo"     → RichTextBox script generati (rtbGeneratedScript) + ricerca
+        "Messaggi"  → ListBox log timestampato (lstMessages)
+
+  StatusBar (basso):
+    Server | Database | User | [area elastica] | Ln N | Col N
+
+I SplitContainer vengono bloccati temporaneamente (IsSplitterFixed=true) durante
+la costruzione per evitare errori di validazione, poi sbloccati in OnFormShown
+dopo che il form ha dimensioni reali.
+
+5.2 PANNELLO SINISTRO
+---------------------
+  ComboBox database:
+    Popolata in LoadInitialDataAsync. L'evento SelectedIndexChanged viene collegato
+    SOLO dopo la popolazione iniziale per evitare chiamate spurie durante il fill.
+
+  TextBox ricerca tabelle:
+    TextChanged → FilterTableList() che filtra _allTables per contains case-insensitive.
+    Il testo viene ripristinato dai settings al caricamento (OnFormShown).
+
+  ListBox tabelle (font Courier New):
+    Mostra "[schema].[nome]".
+    SelectedIndexChanged + DoubleClick → LoadTableStructure():
+      - Estrae schema e nome con Regex "\[([^\]]+)\]\.\[([^\]]+)\]"
+      - Scrive "SELECT * FROM [schema].[tbl]" nell'editor SQL
+      - Azzera _keyColumns e _identityColumns (caricati lazy in GenerateScriptAsync)
+
+5.3 GUARD ASINCRONO
+-------------------
+Ogni operazione async passa per:
+
+  private async Task GuardAsync(Func<Task> action)
+  {
+    if (_busy) return;           // ignora se già in esecuzione
+    _busy = true;
+    try { await action(); }
+    catch (Exception ex) { AddMessage($"❌ Errore: {ex.Message}"); }
+    finally { _busy = false; }
+  }
+
+Questo previene re-entrant calls senza disabilitare la UI.
+
+5.4 STATUSBAR E INDICATORE RIGA/COLONNA
+----------------------------------------
+UpdateLineCol(RichTextBox rtb):
+  int pos  = rtb.SelectionStart;
+  int line = rtb.GetLineFromCharIndex(pos) + 1;
+  int col  = pos - rtb.GetFirstCharIndexFromLine(line - 1) + 1;
+  lblStatusLine.Text = $"Ln {line}";
+  lblStatusCol.Text  = $"Col {col}";
+Viene richiamato su SelectionChanged sia dell'editor SQL che del tab Testo.
+
+SetLoading(bool):
+  Thread-safe (Invoke se InvokeRequired).
+  lblStatusLoading.Text = loading ? "⏳ Caricamento…" : ""
+  UseWaitCursor = loading
+
+
+6. ESECUZIONE QUERY
+================================================================================
+
+ExecuteQueryAsync() in MainForm:
+  1. Legge rtbSqlScript.Text.
+  2. Conta batch GO e righe per il log iniziale.
+  3. Rileva operazioni speciali via Regex (ENABLE/DISABLE/CREATE/DROP/ALTER TRIGGER)
+     e aggiunge messaggi descrittivi nel log.
+  4. Chiama SqlService.ExecuteQueryAsync(script) che:
+     a. SplitSqlBatches(script): divide per righe, identifica "GO" isolato
+        (trim + OrdinalIgnoreCase), accumula batch in StringBuilder.
+     b. Per ogni batch non vuoto: esegue con SqlCommand timeout 300s,
+        legge righe in List<Dictionary<string, object?>> (chiavi OrdinalIgnoreCase,
+        null da DB → null C#).
+     c. Accumula tutti i risultati in allResults.
+  5. Se Success e righe > 0:
+     - Popola DataGridView tramite DataTable (tutti i valori come string).
+     - Larghezza colonne: min(200, max(60, len(header)*9)) pixel.
+     - Seleziona tab "Griglia".
+  6. Se Success ma 0 righe: messaggio "eseguito con successo".
+  7. Se Fail: messaggio di errore, seleziona tab "Messaggi".
+
+ExecuteScriptAsync (usato dall'audit):
+  Stessa SplitSqlBatches, ma usa ExecuteNonQueryAsync con timeout 600s.
+  Accumula RowsAffected totali.
+
+Numerazione righe nel DataGridView:
+  RowPostPaint disegna il numero di riga (1-based) nell'header row,
+  centrato con MeasureString per allineamento preciso.
+
+
+7. SYNTAX HIGHLIGHTING
+================================================================================
+
+Implementato con un pattern regex e un timer debounce (350ms):
+
+  _syntaxTimer = new Timer { Interval = 350 };
+  _syntaxTimer.Tick → ApplySyntaxHighlight(rtbSqlScript)
+  rtbSqlScript.TextChanged → se non _isHighlighting: reset + start timer
+
+ApplySyntaxHighlight(rtb):
+  1. Salva SelectionStart/SelectionLength correnti.
+  2. SendMessage(WM_SETREDRAW=false) → blocca ridisegno per performance.
+  3. rtb.SelectAll() → SelectionColor = colore testo normale (reset).
+  4. Match commenti "--…" → DarkGreen.
+  5. Match stringhe "'…'" (con escape '') → DarkRed.
+  6. Match keyword SQL (pattern \b(SELECT|FROM|WHERE|…)\b, ~70 keywords) →
+     Blue, solo se il token non è già verde o rosso.
+  7. Ripristina selezione originale.
+  8. SendMessage(WM_SETREDRAW=true) + rtb.Invalidate().
+
+La guardia _isHighlighting evita ricorsione: TextChanged viene sparato anche
+quando ApplySyntaxHighlight cambia SelectionColor.
+
+
+8. RICERCA INLINE (Ctrl+F)
+================================================================================
+
+Due barre di ricerca indipendenti: una per l'editor SQL, una per il tab Testo.
+Stessa implementazione condivisa tramite metodi statici.
+
+ShowSearchRtb(panel, textBox): rende visibile la barra, porta il focus al campo.
+CloseSearchRtb(panel, label, rtb): nasconde la barra, porta il focus all'editor.
+
+FindInRtb(rtb, txtSearch, lblCount, forward, resetPos):
+  1. Calcola tutte le occorrenze con Regex.Matches(haystack, Escape(needle), IgnoreCase).
+  2. Se 0 occorrenze: lblCount="Non trovato" (rosso).
+  3. startFrom = resetPos ? 0 : (forward ? selStart+selLen : selStart-1).
+  4. Forward: IndexOf da startFrom, wrap-around se non trovato.
+     Backward: LastIndexOf da startFrom, wrap-around se non trovato.
+  5. Select(idx, needle.Length) + ScrollToCaret.
+  6. lblCount = "corrente/totale".
+
+Scorciatoie:
+  Ctrl+F → apre barra
+  Enter / F3 → prossima occorrenza
+  Shift+F3 → occorrenza precedente
+  Escape → chiude barra
+
+
+9. GENERAZIONE SCRIPT DML
+================================================================================
+
+9.1 FLUSSO GENERALE (GenerateScriptAsync)
+-----------------------------------------
+  1. Verifica che _queryResult non sia vuoto.
+  2. Verifica che almeno una riga sia selezionata nel DataGridView.
+  3. Estrae il nome tabella dalla clausola FROM dell'SQL corrente
+     (Regex "FROM\s+(?:\[?(\w+)\]?\.)?\[?(\w+)\]?").
+     Se diverso da _selectedTable, aggiorna _selectedTable.
+  4. Carica lazy: _keyColumns (GetTableKeyColumnsAsync) e
+     _identityColumns (GetIdentityColumnsAsync).
+  5. Determina le colonne da escludere: rowversion, timestamp e
+     qualsiasi byte[] (valore runtime che indica rowversion).
+  6. Per DELETE: usa le chiavi rilevate, nessun dialog.
+     Per INSERT/UPDATE: apre ColumnSelectorDialog.
+  7. Chiama il builder appropriato, appende al tab Testo, logga.
+
+9.2 HELPER DI FORMATTAZIONE (FmtVal)
+--------------------------------------
+  null/DBNull → "NULL"
+  bool        → "1" / "0"
+  DateTime    → "{ts 'yyyy-MM-dd HH:mm:ss.fff'}"
+  Guid        → "'guid-string'"
+  byte[]      → "0x" + hex
+  string      → se parsabile come DateTime → formato ts, altrimenti 'val' con ''
+  altri       → ToString InvariantCulture
+
+WhereClause(keys, row):
+  Per ogni chiave: se null → "col IS NULL", altrimenti "col = FmtVal(val)".
+  Unisce con " AND ".
+
+FullName(TableInfo):
+  Se schema == "dbo" → solo il nome tabella (per compatibilità legacy).
+  Altrimenti → "schema.nome".
+
+9.3 SCRIPT INSERT
+-----------------
+  Se colonne IDENTITY incluse:
+    SET IDENTITY_INSERT {tbl} ON
+
+  Per ogni riga selezionata:
+    IF NOT EXISTS( SELECT 1 FROM {tbl} WHERE {WhereClause(keys, row)} )
+    BEGIN
+      INSERT INTO {tbl} ( col1, col2, … )
+      SELECT val1, val2, …
+    END
+
+  Se IDENTITY:
+    SET IDENTITY_INSERT {tbl} OFF
+
+  Se non ci sono colonne chiave: INSERT senza IF NOT EXISTS.
+
+9.4 SCRIPT UPDATE (semplice)
+-----------------------------
+  Per ogni riga:
+    UPDATE {tbl}
+    SET
+      col1 = val1,
+      col2 = val2
+    WHERE {WhereClause(keys, row)}
+
+9.5 SCRIPT UPDATE (condizionato)
+---------------------------------
+  Per ogni riga:
+    IF NOT EXISTS(SELECT 1 FROM {tbl} WHERE chiavi... AND col1 = val1 AND col2 = val2)
+    BEGIN
+      UPDATE {tbl}
+      SET col1 = val1, col2 = val2
+      WHERE {WhereClause(keys, row)}
+    END
+
+  (qui non si ha il valore "vecchio" quindi tutti i setCols vengono controllati)
+
+9.6 SCRIPT DELETE
+-----------------
+  Le chiavi vengono rilevate automaticamente (nessun dialog).
+  Per ogni riga:
+    IF EXISTS(SELECT 1 FROM {tbl} WHERE {WhereClause(keys, row)})
+    BEGIN
+      DELETE FROM {tbl} WHERE {WhereClause(keys, row)}
+    END
+
+  Se nessuna chiave disponibile: commento di avviso "--ATTENZIONE".
+
+9.7 COLUMNSELECTORDIALOG
+------------------------
+  Colonne chiave (sx, DarkRed): pre-selezionate tutte.
+  Colonne normali (dx): pre-selezionate tranne le audit cols:
+    dat_utente_cre, cod_utente_cre, dat_utente_mod, cod_utente_mod, cod_azienda_cre.
+  Pulsanti * / Ø per seleziona tutto / deseleziona tutto su ogni lista.
+  Solo per DELETE: la lista colonne normali è nascosta, la lista chiavi occupa tutto.
+  Solo per UPDATE: checkbox "Genera UPDATE condizionato" (inizializzata con
+    _defaultConditionalUpdate, salvata al click OK per la sessione successiva).
+
+
+10. SISTEMA DI AUDIT
+================================================================================
+
+10.1 ARCHITETTURA
+-----------------
+Il sistema crea un database parallelo {NomeDB}_UPD.
+Ogni tabella monitorata nel db sorgente riceve tre trigger AFTER DML:
+  tr_AUDIT_{tbl}_INSERT
+  tr_AUDIT_{tbl}_UPDATE
+  tr_AUDIT_{tbl}_DELETE
+
+Ogni trigger inserisce le righe modificate nel db audit, con 8 colonne
+di metadato prepese alle colonne dati originali:
+
+  dba_tipo_comando  CHAR(1)          I / U / D
+  dba_tipo_dato     CHAR(3)          NEW / OLD
+  dba_macchina      VARCHAR(254)     HOST_NAME()
+  dba_utente        VARCHAR(254)     SYSTEM_USER
+  dba_data          DATETIME         GETDATE()
+  dba_applicazione  VARCHAR(254)     APP_NAME()
+  dba_guid          UNIQUEIDENTIFIER NEWID() — identifica l'operazione logica
+  dba_progupd       INT              progressivo riga (sempre 1 nei trigger)
+  + tutte le colonne dati (escluse timestamp/rowversion)
+
+10.2 FILTRI TABELLE (AuditFilterDialog)
+----------------------------------------
+Mostra: database sorgente → audit db.
+FILTRO1: condizione SQL WHERE aggiuntiva su sys.tables.name
+  Default: "and (SUBSTRING(name,3,1) = '_')"
+  → seleziona tabelle il cui 3° carattere è underscore (convenzione naming aziendale)
+ESCLUDI1: clausola NOT IN per escludere specifiche tabelle
+  Default: "and name NOT IN ('NUMBERS', 'FW_ASYNC_SCHEDULER', 'FW_PROCESSING_DETAILS')"
+Pulsante "Ripristina Standard" resetta entrambi i valori al default.
+
+10.3 INIZIALIZZAZIONE (AuditInitializeAsync)
+---------------------------------------------
+  1. Mostra AuditFilterDialog, legge i filtri.
+  2. Query tabelle:
+       SELECT name FROM {db}..sysobjects WHERE type='U' {FILTRO} {ESCLUDI}
+  3. Per ogni tabella: GetTableColumnsAsync → List<ColumnInfo>.
+  4. AuditScriptBuilder.BuildInitScript(sourceDb, auditDb, tableColumns):
+
+     USE master;
+     IF EXISTS(... name='{auditDb}')
+     BEGIN
+       ALTER DATABASE [{auditDb}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+       DROP DATABASE [{auditDb}];
+     END
+     GO
+     CREATE DATABASE [{auditDb}];
+     GO
+
+     USE [{sourceDb}];
+     GO
+
+     -- Drop trigger esistenti
+     DECLARE @sql NVARCHAR(MAX)='';
+     SELECT @sql = @sql + 'DROP TRIGGER ' + QUOTENAME(SCHEMA_NAME(t.schema_id))
+            + '.' + QUOTENAME(tr.name) + '; '
+     FROM sys.triggers tr INNER JOIN sys.tables t ON tr.parent_id=t.object_id
+     WHERE tr.name LIKE 'tr_AUDIT%';
+     IF @sql<>'' BEGIN EXEC sp_executesql @sql; END
+     GO
+
+     -- Per ogni tabella: 3 trigger (INSERT, UPDATE, DELETE)
+
+  5. Mostra lo script nell'editor SQL, poi ExecuteScriptAsync (timeout 600s).
+  6. Se OK: svuota editor e tab Testo. Se errore: mostra nel log.
+  7. Salva i filtri in AuditSettings.
+
+10.4 STRUTTURA DEI TRIGGER
+---------------------------
+Pattern comune (INSERT e DELETE):
+  SET NOCOUNT ON;
+  DECLARE @dt DATETIME, @guid UNIQUEIDENTIFIER, @host VARCHAR(254), ...
+  SET @dt=GETDATE(); SET @guid=NEWID(); SET @host=HOST_NAME(); ...
+
+  -- Tabella temporanea tipizzata:
+  SELECT TOP 0 [col1], [col2], ... INTO #src FROM [{tbl}];
+  -- Riempita da pseudo-tabella inserted o deleted:
+  INSERT INTO #src SELECT [col1], [col2], ... FROM inserted;  -- (o deleted)
+
+  -- Prima scrittura su questa tabella nel db audit:
+  IF NOT EXISTS (SELECT 1 FROM {auditDb}.dbo.sysobjects WHERE name='{tbl}')
+    SELECT CAST('I' AS CHAR(1)) AS dba_tipo_comando, ... INTO {auditDb}..[{tbl}] FROM #src;
+  ELSE
+    INSERT INTO {auditDb}..[{tbl}] (...) SELECT 'I','NEW',@host,... FROM #src;
+
+  DROP TABLE #src;
+
+Il "SELECT TOP 0 ... INTO #src" crea la tabella temporanea con il tipo esatto
+delle colonne senza copiare dati — tecnica necessaria perché inserted/deleted non
+possono essere usate direttamente fuori dal trigger in batch separati.
+
+La condizione su sysobjects gestisce la prima scrittura: se la tabella audit non
+esiste ancora, SELECT...INTO la crea automaticamente con la struttura corretta.
+
+Trigger UPDATE: usa due tabelle temporanee #ins (NEW, da inserted) e #del (OLD,
+da deleted), unisce con UNION ALL:
+  INSERT INTO {auditDb}..[{tbl}] (...)
+    SELECT 'U','OLD', @host, @user, @dt, @app, @guid, 1, ... FROM #del
+    UNION ALL
+    SELECT 'U','NEW', @host, @user, @dt, @app, @guid, 1, ... FROM #ins;
+
+Le colonne IDENTITY vengono castate al loro tipo per evitare errori di tipo
+nella tabella temporanea:
+  CAST([{col}] AS {datatype}) AS [{col}]
+Le colonne timestamp/rowversion vengono escluse completamente.
+
+10.5 ATTIVAZIONE / DISATTIVAZIONE
+-----------------------------------
+BuildActivateScript: genera dinamicamente ENABLE TRIGGER per tutti i trigger
+  con tr.name LIKE 'tr_AUDIT%' AND tr.is_disabled=1.
+BuildDeactivateScript: DISABLE TRIGGER per tr.is_disabled=0.
+Entrambi usano sp_executesql per l'esecuzione dinamica.
+
+Nota: AuditActivate e AuditDeactivate non eseguono lo script ma lo caricano
+nell'editor SQL — l'utente può revisionarlo e poi eseguirlo con Ctrl+Enter.
+
+10.6 DISINSTALLAZIONE
+----------------------
+BuildRemoveScript:
+  - DROP tutti i trigger tr_AUDIT_* (sp_executesql dinamico).
+  - DROP DATABASE {db}_UPD (con SET SINGLE_USER ROLLBACK IMMEDIATE).
+Anche questo viene caricato nell'editor per revisione manuale.
+
+10.7 GENERAZIONE SCRIPT DI RILASCIO (AuditGenerateScriptAsync)
+---------------------------------------------------------------
+  1. Verifica esistenza del db audit (COUNT su sys.databases).
+  2. Legge tutte le tabelle da {auditDb}.sys.tables.
+  3. Per ogni tabella:
+     a. SELECT * FROM {auditDb}..{tbl} ORDER BY dba_data
+     b. Legge le chiavi primarie dal db sorgente.
+     c. Raggruppa le righe per dba_guid in Dictionary<guid,(Old, New)>.
+        Chiave=guid, valore=coppia (riga OLD, riga NEW).
+        dba_tipo_dato.Trim().ToUpper()=="OLD" → assegna a .Old, altrimenti .New.
+     d. Per ogni coppia (oldRow, newRow):
+
+        cmd = 'I' → INSERT condizionato
+          IF NOT EXISTS(SELECT 1 FROM {tbl} WHERE chiavi...)
+          BEGIN
+            INSERT INTO {tbl} ({cols}) VALUES ({vals})
+          END
+
+        cmd = 'U' → UPDATE solo campi modificati
+          - Confronta ogni colonna non-chiave: oldRow[col] vs newRow[col].
+            old==null && new!=null → diverso
+            old!=null && new==null → diverso
+            entrambi non null: !oldVal.Equals(newVal) → diverso
+          - Se 0 differenze: skip (riga già aggiornata, no script).
+          - Build checkConditions: chiavi (da NEW) + campi modificati (da NEW).
+          IF NOT EXISTS(SELECT 1 FROM {tbl} WHERE checkConditions...)
+          BEGIN
+            UPDATE {tbl}
+            SET col1=newVal1, col2=newVal2
+            WHERE chiavi...
+          END
+
+        cmd = 'D' → DELETE condizionata
+          IF EXISTS(SELECT 1 FROM {tbl} WHERE chiavi...)
+          BEGIN
+            DELETE FROM {tbl} WHERE chiavi...
+          END
+
+  4. Scrive tutto in rtbGeneratedScript, seleziona tab "Testo".
+  5. Log: "Script generato: N comandi da M tabelle".
+
+
+11. ESPLORAZIONE METADATI (DatabaseExplorerService)
+================================================================================
+
+Ogni metodo chiama SqlService.ExecuteQueryAsync<T>(query, mapper).
+
+  GetDatabasesAsync:
+    sys.databases WHERE database_id > 4 (esclude db di sistema: master,
+    tempdb, model, msdb)
+
+  GetTablesAsync(db, filter):
+    INFORMATION_SCHEMA.TABLES [{database}]
+    WHERE TABLE_NAME LIKE '%{filter}%' (se filter fornito)
+
+  GetTableColumnsAsync(db, schema, table):
+    JOIN tra INFORMATION_SCHEMA.COLUMNS e sys.columns per ricavare is_identity.
+
+  GetPrimaryKeysAsync:
+    INFORMATION_SCHEMA.TABLE_CONSTRAINTS JOIN KEY_COLUMN_USAGE
+    WHERE CONSTRAINT_TYPE='PRIMARY KEY'
+
+  GetForeignKeysAsync:
+    sys.foreign_keys JOIN sys.foreign_key_columns
+
+  GetTableIndexesAsync:
+    sys.indexes JOIN sys.index_columns WHERE type > 0 (esclude heap)
+
+  GetIdentityColumnsAsync:
+    sys.columns JOIN sys.tables JOIN sys.schemas WHERE is_identity=1
+
+  GetTableKeyColumnsAsync:
+    Wrapper su GetPrimaryKeysAsync → List<string> nomi colonne.
+
+  GetTableDdlAsync:
+    Costruisce CREATE TABLE con tutte le colonne e il PRIMARY KEY CONSTRAINT.
+
+  GenerateInsertScriptAsync:
+    SELECT TOP N, poi genera IF NOT EXISTS ... INSERT per ogni riga.
+
+
+12. FORMATTAZIONE VALORI SQL (SqlService — metodi statici)
+================================================================================
+
+SqlFmtField(value, SqlDataType) — usato in DatabaseExplorerService:
+  Numerico   → ToString InvariantCulture (virgola→punto)
+  Stringa    → 'valore' con escape ''
+  Data       → {ts 'yyyy-MM-dd HH:mm:ss.fff'}
+  Boolean    → 1 / 0
+  Binary     → 0x + Convert.ToHexString(bytes)
+  NULL/DBNull → NULL
+
+SqlFmtFieldWhere(value, SqlDataType):
+  Se NULL → "IS NULL", altrimenti "= {SqlFmtField(...)}"
+
+MapSqlDataType(string) → SqlDataType enum:
+  Mappa i nomi stringa SQL Server ai valori dell'enum.
+  timestamp e rowversion → Binary (non inseribili direttamente).
+
+FmtVal(object?) in MainForm (metodo privato per la generazione DML):
+  Implementazione analoga ma lavora direttamente con i valori object? del
+  Dictionary restituito dalla query, con gestione extra per string che
+  potrebbero essere date serializzate come testo.
+
+
+13. PERSISTENZA IMPOSTAZIONI (SettingsService)
+================================================================================
+
+Path: %APPDATA%/PBScriptNew/settings.json
+
+AuditSettings (POCO serializzato con System.Text.Json, WriteIndented=true):
+  AuditFilter          Filtro SQL tabelle audit
+  AuditExclude         Esclusioni tabelle audit
+  TableSearch          Ultimo testo nella casella di ricerca tabelle
+  DefaultConditionalUpdate  Ultima scelta per UPDATE condizionato
+  LastServer           Ultimo server connesso
+  LastDatabase         Ultimo database connesso
+  LastUser             Ultimo utente SQL (vuoto se Windows Auth)
+
+LoadAuditSettings: legge e deserializza, ritorna new AuditSettings() se errore.
+SaveAuditSettings: crea directory se non esiste, serializza, scrive.
+
+Quando viene salvato:
+  - LoginForm.BtnConnect_Click (dopo connessione riuscita): salva LastServer/DB/User.
+  - AuditInitializeAsync: salva i nuovi filtri.
+  - MainForm.OnFormClosed: salva TableSearch, DefaultConditionalUpdate,
+    LastServer, LastDatabase, LastUser.
+
+
+14. PATTERN RISULTATO (SqlResult<T>)
+================================================================================
+
+Tutti i metodi dei servizi restituiscono SqlResult<T>:
+  Success       bool
+  Data          T?
+  RowsAffected  int
+  Error         string?
+
+Factory:
+  SqlResult<T>.Ok(data, rowsAffected=0)
+  SqlResult<T>.Fail(errorMessage)
+
+Vantaggi:
+  - Nessuna eccezione propagata verso la UI.
+  - Il chiamante controlla sempre .Success prima di usare .Data.
+  - I messaggi di errore vengono loggati nel tab "Messaggi" invece di
+    far crashare l'applicazione.
+
+
+15. FLUSSI OPERATIVI — RIEPILOGO
+================================================================================
+
+A. QUERY SEMPLICE
+  Utente scrive SELECT → Ctrl+Enter o pulsante Esegui
+  → GuardAsync → ExecuteQueryAsync
+  → SqlService.ExecuteQueryAsync (split GO, batch 300s)
+  → PopulateGrid (DataTable → DataGridView)
+  → Tab "Griglia", log "N righe restituite"
+
+B. GENERAZIONE SCRIPT DML
+  SELECT nella griglia → selezione righe → menu Script → INSERT/UPDATE/DELETE
+  → GuardAsync → GenerateScriptAsync
+  → Risolve tabella da clausola FROM
+  → Carica chiavi e identity (lazy)
+  → ColumnSelectorDialog (tranne DELETE)
+  → Build[Insert|Update|Delete]Script
+  → AppendToGeneratedScript → Tab "Testo"
+
+C. INSTALLAZIONE AUDIT
+  Menu Audit → Inizializza/Resetta
+  → AuditFilterDialog (filtri)
+  → Query sysobjects con filtri
+  → GetTableColumnsAsync per ogni tabella
+  → AuditScriptBuilder.BuildInitScript (DROP db, CREATE db, DROP trigger, CREATE trigger x3 per tabella)
+  → ExecuteScriptAsync (600s)
+  → Log risultato
+
+D. ATTIVAZIONE/PAUSA AUDIT
+  Menu Audit → Attiva o Disattiva
+  → AuditScriptBuilder.Build[Activate|Deactivate]Script
+  → SetSqlScript (carica nell'editor per revisione)
+  → Utente esegue manualmente con Ctrl+Enter
+
+E. SCRIPT DI RILASCIO DA AUDIT
+  Menu Audit → Genera Script Audit
+  → Verifica esistenza {db}_UPD
+  → Legge tabelle e righe dal db audit
+  → Raggruppa per dba_guid
+  → Confronta OLD vs NEW per UPDATE (solo campi modificati)
+  → Genera IF NOT EXISTS/IF EXISTS per ogni operazione
+  → rtbGeneratedScript, tab "Testo"
+
+F. LOGOUT
+  Pulsante Logout → new LoginForm().Show(); Close()
+  OnFormClosed → salva settings → _sql.Dispose()
+
+
+16. NOTE TECNICHE E DECISIONI PROGETTUALI
+================================================================================
+
+- Nessun container DI: il wiring è manuale in Program.cs e MainForm.
+  Scelta deliberata per semplicità in un'applicazione desktop di dimensioni medie.
+
+- Thread-safety UI: tutti i metodi che aggiornano controlli UI da thread diversi
+  usano InvokeRequired/Invoke. SetLoading e AppendToGeneratedScript ne sono esempi.
+
+- SplitContainer: i MinSize vengono impostati in OnFormShown (non nel costruttore)
+  perché prima che il form sia visibile ClientSize non è ancora definitivo e
+  SetSplitterDistance lancerebbe eccezioni di validazione.
+
+- Nessun aggiornamento live della struttura tabelle: i metadati (colonne, chiavi)
+  vengono caricati on-demand in GenerateScriptAsync, non al click sulla tabella.
+  LoadTableStructure è sincrono e non fa I/O.
+
+- Colonne escluse automaticamente da script DML: rowversion, timestamp (per nome)
+  e qualsiasi colonna il cui valore runtime è byte[] (rilevamento runtime del tipo).
+
+- Trigger audit — prima scrittura: la condizione IF NOT EXISTS su sysobjects
+  è necessaria perché SELECT...INTO crea la tabella nel db audit solo la prima
+  volta; le scritture successive usano INSERT INTO su tabella già esistente.
+
+- FullName: se schema == "dbo" viene omesso dal nome qualificato. Questo riflette
+  una convenzione storica del database target dove le tabelle dbo non richiedono
+  prefisso nelle query.
+
+- DefaultConditionalUpdate: la preferenza per UPDATE condizionato viene ricordata
+  tra le sessioni tramite AuditSettings.DefaultConditionalUpdate e aggiornata
+  ogni volta che l'utente chiude ColumnSelectorDialog con OK.
+
+
+================================================================================
+  Fine analisi tecnica — PBScriptNew v1.0
+  File generato automaticamente da analisi sorgenti
+================================================================================
