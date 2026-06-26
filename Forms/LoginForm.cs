@@ -1,8 +1,8 @@
-using PBScriptNew.Config;
-using PBScriptNew.Models;
-using PBScriptNew.Services;
+﻿using MBScript.Config;
+using MBScript.Models;
+using MBScript.Services;
 
-namespace PBScriptNew.Forms;
+namespace MBScript.Forms;
 
 public class LoginForm : Form
 {

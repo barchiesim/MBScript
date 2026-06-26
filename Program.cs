@@ -1,4 +1,4 @@
-using PBScriptNew.Forms;
+﻿using MBScript.Forms;
 
 Application.EnableVisualStyles();
 Application.SetCompatibleTextRenderingDefault(false);

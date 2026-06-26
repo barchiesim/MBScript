@@ -1,7 +1,7 @@
-using Microsoft.Data.SqlClient;
-using PBScriptNew.Models;
+﻿using Microsoft.Data.SqlClient;
+using MBScript.Models;
 
-namespace PBScriptNew.Services;
+namespace MBScript.Services;
 
 public class SqlService : IDisposable
 {

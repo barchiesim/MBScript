@@ -1,4 +1,4 @@
-# PBScriptNew
+﻿# MBScript
 
 Applicazione desktop Windows Forms (.NET 8, C#) per esplorare database SQL Server, generare script DML e configurare un sistema di audit completo basato su trigger.
 
@@ -6,7 +6,7 @@ Applicazione desktop Windows Forms (.NET 8, C#) per esplorare database SQL Serve
 
 ## Panoramica
 
-PBScript fornisce un ambiente integrato per:
+MBScript fornisce un ambiente integrato per:
 
 - Connettersi a istanze SQL Server con autenticazione SQL o Windows.
 - Navigare database, tabelle e metadati di colonne/chiavi/indici.
@@ -31,7 +31,7 @@ PBScript fornisce un ambiente integrato per:
 ```bash
 dotnet restore
 dotnet build -c Debug
-dotnet run --project PBScriptNewCS.csproj
+dotnet run --project MBScriptCS.csproj
 ```
 
 Il binario compilato si trova in `bin/Debug/net8.0-windows/` o `bin/Release/net8.0-windows/`.
@@ -60,7 +60,7 @@ Il file `appsettings.json` nella root contiene le impostazioni di connessione e 
 
 Le stesse chiavi possono essere sovrascritte tramite variabili d'ambiente: `SQL_SERVER`, `SQL_USER`, `SQL_PASSWORD`, `SQL_DATABASE`, `INTEGRATED_SECURITY`.
 
-Le impostazioni utente (ultimo server, filtri audit, preferenze UI) vengono salvate automaticamente in `%APPDATA%/PBScriptNew/settings.json`.
+Le impostazioni utente (ultimo server, filtri audit, preferenze UI) vengono salvate automaticamente in `%APPDATA%/MBScript/settings.json`.
 
 ---
 
@@ -223,7 +223,7 @@ Analizza i dati nel db audit e produce script DML pronti all'uso:
 
 ### Persistenza impostazioni
 
-`SettingsService` salva e carica un file JSON in `%APPDATA%/PBScriptNew/settings.json` con:
+`SettingsService` salva e carica un file JSON in `%APPDATA%/MBScript/settings.json` con:
 
 | Chiave | Descrizione |
 |--------|-------------|

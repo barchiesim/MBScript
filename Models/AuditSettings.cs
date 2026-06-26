@@ -1,4 +1,4 @@
-namespace PBScriptNew.Models;
+﻿namespace MBScript.Models;
 
 public class AuditSettings
 {

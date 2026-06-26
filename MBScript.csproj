@@ -4,13 +4,13 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
-    <AssemblyName>PBScriptNew</AssemblyName>
-    <RootNamespace>PBScriptNew</RootNamespace>
+    <AssemblyName>MBScript</AssemblyName>
+    <RootNamespace>MBScript</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <Authors>Maurizio Barchiesi</Authors>
-    <Description>PBScript - SQL Server Utility - C# WinForms Edition</Description>
+    <Description>MBScript - SQL Server Utility - C# WinForms Edition</Description>
     <Version>1.1.19</Version>
   </PropertyGroup>
 

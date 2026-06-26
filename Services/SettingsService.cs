@@ -1,13 +1,13 @@
-using System.Text.Json;
-using PBScriptNew.Models;
+﻿using System.Text.Json;
+using MBScript.Models;
 
-namespace PBScriptNew.Services;
+namespace MBScript.Services;
 
 public static class SettingsService
 {
     private static readonly string SettingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "PBScriptNew",
+        "MBScript",
         "settings.json"
     );
 

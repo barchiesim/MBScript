@@ -1,7 +1,7 @@
-using Microsoft.Extensions.Configuration;
-using PBScriptNew.Models;
+﻿using Microsoft.Extensions.Configuration;
+using MBScript.Models;
 
-namespace PBScriptNew.Config;
+namespace MBScript.Config;
 
 public sealed class GlobalConfig
 {

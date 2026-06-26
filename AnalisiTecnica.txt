@@ -1,5 +1,5 @@
-================================================================================
-  ANALISI TECNICA — PBScriptNew
+﻿================================================================================
+  ANALISI TECNICA — MBScript
   Applicazione Windows Forms (.NET 8 / C# 12) per SQL Server
   Data analisi: 2026-06-26
 ================================================================================
@@ -8,7 +8,7 @@
 1. PANORAMICA GENERALE
 ================================================================================
 
-PBScriptNew è uno strumento desktop per sviluppatori e DBA che lavorano su SQL
+MBScript è uno strumento desktop per sviluppatori e DBA che lavorano su SQL
 Server. Le funzioni principali sono:
 
   a) Esplorare la struttura di un database (tabelle, colonne, chiavi, indici).
@@ -582,7 +582,7 @@ FmtVal(object?) in MainForm (metodo privato per la generazione DML):
 13. PERSISTENZA IMPOSTAZIONI (SettingsService)
 ================================================================================
 
-Path: %APPDATA%/PBScriptNew/settings.json
+Path: %APPDATA%/MBScript/settings.json
 
 AuditSettings (POCO serializzato con System.Text.Json, WriteIndented=true):
   AuditFilter          Filtro SQL tabelle audit
@@ -705,6 +705,6 @@ F. LOGOUT
 
 
 ================================================================================
-  Fine analisi tecnica — PBScriptNew v1.0
+  Fine analisi tecnica — MBScript v1.0
   File generato automaticamente da analisi sorgenti
 ================================================================================

@@ -1,7 +1,7 @@
-using System.Text;
-using PBScriptNew.Models;
+﻿using System.Text;
+using MBScript.Models;
 
-namespace PBScriptNew.Services;
+namespace MBScript.Services;
 
 public static class AuditScriptBuilder
 {

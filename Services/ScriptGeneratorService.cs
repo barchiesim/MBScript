@@ -1,7 +1,7 @@
-using PBScriptNew.Models;
+﻿using MBScript.Models;
 using System.Text;
 
-namespace PBScriptNew.Services;
+namespace MBScript.Services;
 
 public class ScriptGeneratorService
 {

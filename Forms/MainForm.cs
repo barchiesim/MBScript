@@ -1,10 +1,10 @@
-using PBScriptNew.Models;
-using PBScriptNew.Services;
+﻿using MBScript.Models;
+using MBScript.Services;
 using System.Data;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace PBScriptNew.Forms;
+namespace MBScript.Forms;
 
 public class MainForm : Form
 {

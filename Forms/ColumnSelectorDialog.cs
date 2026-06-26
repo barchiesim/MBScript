@@ -1,4 +1,4 @@
-namespace PBScriptNew.Forms;
+﻿namespace MBScript.Forms;
 
 public class ColumnSelectorDialog : Form
 {
