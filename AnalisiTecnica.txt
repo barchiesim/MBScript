@@ -1,7 +1,7 @@
 ﻿================================================================================
   ANALISI TECNICA — MBScript
   Applicazione Windows Forms (.NET 8 / C# 12) per SQL Server
-  Data analisi: 2026-06-26
+  Data analisi: 2026-06-29
 ================================================================================
 
 
@@ -37,6 +37,7 @@ Tecnologie: .NET 8, Windows Forms, Microsoft.Data.SqlClient,
   Services/
     SqlService.cs          Connessione, query, formattazione valori SQL
     DatabaseExplorerService.cs  Metadati DB
+    ScriptGeneratorService.cs   Generazione DDL (CREATE TABLE) e INSERT
     AuditScriptBuilder.cs  Generazione script trigger (static)
     SettingsService.cs     Persistenza JSON (static)
   Models/
@@ -44,7 +45,7 @@ Tecnologie: .NET 8, Windows Forms, Microsoft.Data.SqlClient,
     DatabaseConfig.cs      Parametri connessione
     AuditSettings.cs       Impostazioni persistenti
     DatabaseModels.cs      DTO metadati (table, column, key, index, …)
-    ApplicationOptions.cs  Opzioni da appsettings.json
+    SqlDataType.cs         Enum tipi dato SQL Server
 
 
 3. AVVIO DELL'APPLICAZIONE
@@ -63,8 +64,7 @@ GlobalConfig (singleton thread-safe, double-checked locking):
   - Legge appsettings.json con ConfigurationBuilder.
   - Sovrascrive ogni chiave con le variabili d'ambiente corrispondenti
     (SQL_SERVER, SQL_USER, SQL_PASSWORD, SQL_DATABASE, INTEGRATED_SECURITY).
-  - Produce DatabaseConfig e ApplicationOptions disponibili globalmente.
-  - ColorSyntax è true per default se non specificato.
+  - Produce DatabaseConfig disponibile globalmente tramite Instance.DbConfig.
 
 
 4. AUTENTICAZIONE E CONNESSIONE (LoginForm + SqlService)
@@ -210,7 +210,7 @@ Implementato con un pattern regex e un timer debounce (350ms):
 
   _syntaxTimer = new Timer { Interval = 350 };
   _syntaxTimer.Tick → ApplySyntaxHighlight(rtbSqlScript)
-  rtbSqlScript.TextChanged → se non _isHighlighting: reset + start timer
+  rtbSqlScript.TextChanged → (sempre attivo) se non _isHighlighting: reset + start timer
 
 ApplySyntaxHighlight(rtb):
   1. Salva SelectionStart/SelectionLength correnti.
@@ -705,6 +705,6 @@ F. LOGOUT
 
 
 ================================================================================
-  Fine analisi tecnica — MBScript v1.0
+  Fine analisi tecnica — MBScript v1.1.19
   File generato automaticamente da analisi sorgenti
 ================================================================================

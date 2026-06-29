@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`PBScriptNew` è un'applicazione desktop **Windows Forms** (.NET 8, C# 12) per esplorare database SQL Server, generare script SQL (INSERT/UPDATE/DELETE) e produrre script di audit tramite trigger.
+`MBScript` è un'applicazione desktop **Windows Forms** (.NET 8, C# 12) per esplorare database SQL Server, generare script SQL (INSERT/UPDATE/DELETE) e produrre script di audit tramite trigger.
 
 ## Commands
 
@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 dotnet restore
 dotnet build -c Debug
 dotnet build -c Release
-dotnet run --project PBScriptNewCS.csproj
+dotnet run --project MBScript.csproj
 dotnet test
 ```
 
@@ -39,7 +39,7 @@ Config/   → GlobalConfig.cs: singleton che carica appsettings.json + env vars.
 | `DatabaseExplorerService` | Metadati DB: tabelle, colonne, chiavi, indici |
 | `ScriptGeneratorService` | Generazione DDL, INSERT/UPDATE/DELETE |
 | `AuditScriptBuilder` | Script trigger DML per il sistema di audit |
-| `SettingsService` | Persistenza impostazioni utente in `%APPDATA%/PBScriptNew/` |
+| `SettingsService` | Persistenza impostazioni utente in `%APPDATA%/MBScript/` |
 
 ### Pattern risultato
 
@@ -55,7 +55,7 @@ SqlResult<List<TableInfo>>.Fail(ex.Message)
 
 ### Configurazione
 
-- `appsettings.json` → connessione DB e flag applicativi (`FormatoEsteso`, `ForzaFlgStd`, ecc.)
+- `appsettings.json` → solo parametri di connessione DB (sezione `Database`)
 - Variabili d'ambiente fallback: `SQL_SERVER`, `SQL_USER`, `SQL_PASSWORD`, `SQL_DATABASE`, `INTEGRATED_SECURITY`
 - **Non committare `appsettings.json`** se contiene credenziali reali.
 
