@@ -9,7 +9,6 @@ public sealed class GlobalConfig
     private static readonly object _lock = new();
 
     public DatabaseConfig DbConfig { get; private set; }
-    public ApplicationOptions AppOptions { get; private set; }
 
     public string DbNome  { get; set; } = "";
     public string Filtro  { get; set; } = "";
@@ -33,15 +32,6 @@ public sealed class GlobalConfig
                 config["Database:IntegratedSecurity"] ?? Environment.GetEnvironmentVariable("INTEGRATED_SECURITY"),
                 out var intSec) && intSec
         };
-
-        AppOptions = new ApplicationOptions
-        {
-            FormatoEsteso      = bool.TryParse(config["Application:FormatoEsteso"],      out var fe)   && fe,
-            ForzaFlgStd        = bool.TryParse(config["Application:ForzaFlgStd"],        out var ffs)  && ffs,
-            ForzaFlgAggRelease = bool.TryParse(config["Application:ForzaFlgAggRelease"], out var ffar) && ffar,
-            EscludiTimestamp   = bool.TryParse(config["Application:EscludiTimestamp"],   out var et)   && et,
-            ColorSyntax        = !bool.TryParse(config["Application:ColorSyntax"],       out var cs)   || cs
-        };
     }
 
     public static GlobalConfig Instance
@@ -54,6 +44,5 @@ public sealed class GlobalConfig
         }
     }
 
-    public void SetDatabaseConfig(DatabaseConfig config)     => DbConfig    = config;
-    public void SetApplicationOptions(ApplicationOptions opt) => AppOptions = opt;
+    public void SetDatabaseConfig(DatabaseConfig config) => DbConfig = config;
 }

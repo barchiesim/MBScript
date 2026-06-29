@@ -1,4 +1,4 @@
-﻿# MBScript
+﻿# MBScript `v1.1.19`
 
 Applicazione desktop Windows Forms (.NET 8, C#) per esplorare database SQL Server, generare script DML e configurare un sistema di audit completo basato su trigger.
 
@@ -31,7 +31,7 @@ MBScript fornisce un ambiente integrato per:
 ```bash
 dotnet restore
 dotnet build -c Debug
-dotnet run --project MBScriptCS.csproj
+dotnet run --project MBScript.csproj
 ```
 
 Il binario compilato si trova in `bin/Debug/net8.0-windows/` o `bin/Release/net8.0-windows/`.
@@ -49,11 +49,7 @@ Il file `appsettings.json` nella root contiene le impostazioni di connessione e 
     "User": "",
     "Password": "",
     "Database": "",
-    "IntegratedSecurity": true
-  },
-  "Application": {
-    "ColorSyntax": true,
-    "EscludiTimestamp": false
+    "IntegratedSecurity": false
   }
 }
 ```
@@ -82,11 +78,11 @@ Services/
 Models/
   SqlResult.cs           Wrapper risultato operazioni (Ok / Fail)
   DatabaseModels.cs      DTO per metadati DB
+  SqlDataType.cs         Enum tipi dato SQL Server
   AuditSettings.cs       Impostazioni persistenti audit e UI
   DatabaseConfig.cs      Parametri di connessione
-  ApplicationOptions.cs  Opzioni applicative da appsettings.json
 Config/
-  GlobalConfig.cs        Singleton di configurazione (appsettings + env vars)
+  GlobalConfig.cs        Singleton di configurazione DB (appsettings + env vars)
 ```
 
 ---
@@ -129,15 +125,17 @@ Config/
 
 ---
 
-### Generazione script DML
+### Generazione script DDL e DML
 
-Tutti gli script sono **idempotenti**: usano `IF NOT EXISTS`/`IF EXISTS` per garantire sicurezza in ambienti già popolati.
+`ScriptGeneratorService` espone anche `GenerateCreateTableScriptAsync` che produce lo script `CREATE TABLE` completo di vincoli, foreign key e indici a partire dai metadati live della tabella.
+
+Gli script DML sono **idempotenti**: usano `IF NOT EXISTS`/`IF EXISTS` per garantire sicurezza in ambienti già popolati.
 
 #### INSERT
 
 - Apre **ColumnSelectorDialog** per scegliere le colonne da includere e le colonne chiave per la clausola `IF NOT EXISTS`.
 - Aggiunge automaticamente `SET IDENTITY_INSERT ON/OFF` se la tabella ha colonne IDENTITY.
-- Esclude colonne `rowversion`/`timestamp`.
+- Esclude colonne `rowversion`/`timestamp` e colonne audit standard (`dat_utente_cre`, `cod_utente_cre`, `dat_utente_mod`, `cod_utente_mod`, `cod_azienda_cre`).
 - Gestisce correttamente `NULL`, date, GUID, `byte[]` (hex), stringhe con escape delle virgolette singole.
 
 ```sql
@@ -243,7 +241,7 @@ Analizza i dati nel db audit e produce script DML pronti all'uso:
 Forms/    → UI only. Chiama servizi, non accede mai al DB direttamente.
 Services/ → Tutta la logica di business e accesso dati.
 Models/   → DTO puri (solo proprietà, nessuna logica).
-Config/   → GlobalConfig.cs: singleton che carica appsettings.json + env vars.
+Config/   → GlobalConfig.cs: singleton che carica la configurazione DB da appsettings.json + env vars.
 ```
 
 Tutti i servizi restituiscono `SqlResult<T>`: le eccezioni non vengono mai propagate verso la UI. Il `MainForm` usa un guard flag `_busy` e il metodo `GuardAsync` per prevenire chiamate rientranti su operazioni async.
