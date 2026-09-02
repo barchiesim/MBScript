@@ -3,14 +3,23 @@
 /// <summary>Operatori dei "Filtri per testo" in stile datasheet Access.</summary>
 public enum ColumnFilterOperator
 {
+    /// <summary>Nessun filtro applicato.</summary>
     None = 0,
+    /// <summary>Uguale a.</summary>
     Equals,
+    /// <summary>Diverso da.</summary>
     NotEquals,
+    /// <summary>Inizia con.</summary>
     BeginsWith,
+    /// <summary>Non inizia con.</summary>
     NotBeginsWith,
+    /// <summary>Contiene.</summary>
     Contains,
+    /// <summary>Non contiene.</summary>
     NotContains,
+    /// <summary>Termina con.</summary>
     EndsWith,
+    /// <summary>Non termina con.</summary>
     NotEndsWith
 }
 
