@@ -138,6 +138,22 @@ public class DatabaseExplorerService
         return result.Success && result.Data is not null ? result.Data : new List<string>();
     }
 
+    /// <summary>Colonne che SQL Server valorizza da sé e per cui un INSERT con valore
+    /// esplicito fallisce: colonne calcolate e rowversion/timestamp (il tipo di sistema
+    /// resta "timestamp" anche quando la colonna è dichiarata come rowversion).</summary>
+    public async Task<List<string>> GetNonInsertableColumnsAsync(string database, string schema, string tableName)
+    {
+        var result = await _sql.ExecuteQueryAsync<string>($@"
+            SELECT c.name
+            FROM [{database}].sys.columns c
+            JOIN [{database}].sys.tables t ON c.object_id = t.object_id
+            JOIN [{database}].sys.schemas s ON t.schema_id = s.schema_id
+            WHERE s.name = '{schema}' AND t.name = '{tableName}'
+              AND (c.is_computed = 1 OR TYPE_NAME(c.user_type_id) = 'timestamp')",
+            r => r[0]?.ToString() ?? "");
+        return result.Success && result.Data is not null ? result.Data : new List<string>();
+    }
+
     public async Task<string> GetTableDdlAsync(string database, string schema, string tableName)
     {
         var colsResult = await GetTableColumnsAsync(database, schema, tableName);

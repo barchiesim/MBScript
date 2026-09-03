@@ -17,6 +17,9 @@ public class MainForm : Form
     private List<Dictionary<string, object?>> _queryResult = new();
     private List<string> _keyColumns = new();
     private HashSet<string> _identityColumns = new(StringComparer.OrdinalIgnoreCase);
+    // Colonne calcolate e rowversion/timestamp: SQL Server le valorizza da sé, un
+    // INSERT con valore esplicito fallisce ("Cannot insert an explicit value...").
+    private HashSet<string> _nonInsertableColumns = new(StringComparer.OrdinalIgnoreCase);
     private List<TableInfo> _allTables = new();
     private TableInfo? _selectedTable = null;
     private string _auditFilter = string.Empty;
@@ -259,7 +262,9 @@ public class MainForm : Form
         txtTableSearch.TextChanged += (_, _) => FilterTableList();
         var lblTables = new Label { Text = "Tabelle:", Dock = DockStyle.Top, Height = 20, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) };
         lstTables = new ListBox { Dock = DockStyle.Fill, Font = new Font("Courier New", 7.5f) };
-        lstTables.DoubleClick += (_, _) => LoadTableStructure();
+        // Doppio clic: carica la SELECT e la esegue subito, come l'apertura di una
+        // tabella in Access. Il singolo clic si limita a preparare lo script.
+        lstTables.DoubleClick += (_, _) => { LoadTableStructure(); _ = GuardAsync(ExecuteQueryAsync); };
         lstTables.SelectedIndexChanged += (_, _) => LoadTableStructure();
 
         pnlLeft.Controls.Add(lstTables);
@@ -787,6 +792,7 @@ public class MainForm : Form
         _selectedTable = new TableInfo { TableSchema = schema, TableName = tbl, TableType = "BASE TABLE" };
         _keyColumns = new List<string>();
         _identityColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        _nonInsertableColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         string scriptText = $"SELECT * FROM [{schema}].[{tbl}]";
         _lastAutoScript = scriptText;
@@ -858,12 +864,30 @@ public class MainForm : Form
         finally { SetLoading(false); }
     }
 
-    private void PopulateGrid(List<Dictionary<string, object?>> rows)
+    /// <summary>Azzera filtri e ordinamento prima di ricaricare la griglia.
+    /// Va fatto sul BindingSource e non solo sullo stato interno: Filter e Sort
+    /// restano puntati alle colonne della query precedente e, se la nuova query ha
+    /// colonne diverse, l'assegnazione della DataSource fallisce
+    /// ("Sort string contains a property that is not in the IBindingList").</summary>
+    private void ResetGridFiltersAndSort()
     {
         _columnFilters.Clear();
         _filtersSuspended = false;
         _sortColumn = null;
+        _sortAscending = true;
+        _markerRowIndex = -1;
         _insertedNewRows.Clear();
+        _savingNewRows.Clear();
+
+        try { _resultsBindingSource.Filter = ""; }
+        catch { /* nessuna sorgente associata */ }
+        try { _resultsBindingSource.Sort = ""; }
+        catch { /* nessuna sorgente associata */ }
+    }
+
+    private void PopulateGrid(List<Dictionary<string, object?>> rows)
+    {
+        ResetGridFiltersAndSort();
 
         if (rows.Count == 0)
         {
@@ -932,10 +956,7 @@ public class MainForm : Form
 
     private async Task PrepareEmptyGridFromCurrentTableAsync()
     {
-        _columnFilters.Clear();
-        _filtersSuspended = false;
-        _sortColumn = null;
-        _insertedNewRows.Clear();
+        ResetGridFiltersAndSort();
 
         var dt = new DataTable();
 
@@ -1165,6 +1186,7 @@ public class MainForm : Form
                 _selectedTable = new TableInfo { TableSchema = sch, TableName = tbl, TableType = "BASE TABLE" };
                 _keyColumns = new List<string>();
                 _identityColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                _nonInsertableColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             }
         }
 
@@ -1172,8 +1194,14 @@ public class MainForm : Form
         {
             _keyColumns = await _dbExplorer.GetTableKeyColumnsAsync(db, _selectedTable.TableSchema, _selectedTable.TableName);
             _identityColumns = new HashSet<string>(await _dbExplorer.GetIdentityColumnsAsync(db, _selectedTable.TableSchema, _selectedTable.TableName), StringComparer.OrdinalIgnoreCase);
+            _nonInsertableColumns = new HashSet<string>(await _dbExplorer.GetNonInsertableColumnsAsync(db, _selectedTable.TableSchema, _selectedTable.TableName), StringComparer.OrdinalIgnoreCase);
         }
     }
+
+    /// <summary>True se la colonna non va mai inclusa in un INSERT: identity, calcolata
+    /// o rowversion/timestamp. SQL Server la valorizza da sé.</summary>
+    private bool IsExcludedFromInsert(string columnName) =>
+        _identityColumns.Contains(columnName) || _nonInsertableColumns.Contains(columnName);
 
     private List<int> GetSelectedRowIndices()
     {
@@ -1289,27 +1317,23 @@ public class MainForm : Form
 
         DiscardEmptyPendingRows();
 
-        var pendingInsertRows = new List<int>();
-        for (int i = 0; i < _resultsBindingSource.Count; i++)
-        {
-            var row = GetDataRowAt(i);
-            if (row is null) continue;
-            if (row.RowState != DataRowState.Added) continue;
-            if (_insertedNewRows.Contains(row)) continue;
-            if (!DataRowHasValues(row)) continue;
-            pendingInsertRows.Add(i);
-        }
+        // Valida solo la riga su cui si trovava il cursore, cioè quella che l'utente
+        // sta effettivamente lasciando. Un errore di inserimento va mostrato una volta,
+        // quando si esce dalla riga: se qui si tentasse di reinserire QUALSIASI riga
+        // Added rimasta nella griglia, un inserimento fallito in precedenza
+        // ripresenterebbe lo stesso errore durante un'azione successiva non correlata
+        // (es. un Ctrl+V su un'altra riga). HasPendingNewRow, chiamato subito dopo da
+        // chi invoca questo metodo, resta comunque a bloccare nuovi inserimenti finché
+        // quella riga non viene sistemata.
+        DataRow? currentRow = GetDataRowAt(currentRowIndex);
+        if (currentRow is null || currentRow.RowState != DataRowState.Added
+            || _insertedNewRows.Contains(currentRow) || !DataRowHasValues(currentRow))
+            return true;
 
-        foreach (int rowIndex in pendingInsertRows)
-        {
-            await OnGridRowValidatedAsync(rowIndex);
+        await OnGridRowValidatedAsync(currentRowIndex);
 
-            var row = GetDataRowAt(rowIndex);
-            if (row is not null && row.RowState == DataRowState.Added && !_insertedNewRows.Contains(row) && DataRowHasValues(row))
-                return false;
-        }
-
-        return true;
+        currentRow = GetDataRowAt(currentRowIndex);
+        return currentRow is null || currentRow.RowState != DataRowState.Added || _insertedNewRows.Contains(currentRow);
     }
 
     private static bool DataRowHasValues(DataRow dr)
@@ -1433,7 +1457,7 @@ public class MainForm : Form
 
             var insertCols = dr.Table.Columns.Cast<DataColumn>()
                 .Select(c => c.ColumnName)
-                .Where(c => c != RowIdxColumn && !_identityColumns.Contains(c))
+                .Where(c => c != RowIdxColumn && !IsExcludedFromInsert(c))
                 .ToList();
 
             string fn = FullName(_selectedTable);
@@ -1734,21 +1758,22 @@ public class MainForm : Form
         foreach (KeyValuePair<string, object?> kv in values)
         {
             if (kv.Key == RowIdxColumn) continue;
-            if (_identityColumns.Contains(kv.Key)) continue;
+            if (IsExcludedFromInsert(kv.Key)) continue;
             row[kv.Key] = kv.Value ?? (object)DBNull.Value;
         }
     }
 
     /// <summary>Aggiunge alla griglia una riga in stato Added con i valori indicati:
     /// resta in inserimento, modificabile, e viene scritta sul database quando
-    /// l'utente esce dalla riga. Le colonne identity non vengono valorizzate.</summary>
+    /// l'utente esce dalla riga. Le colonne identity, calcolate e rowversion/timestamp
+    /// non vengono valorizzate: SQL Server le assegna da sé.</summary>
     private DataRow AppendPendingRow(Dictionary<string, object?> values)
     {
         DataRow row = _resultsTable!.NewRow();
         foreach (KeyValuePair<string, object?> kv in values)
         {
             if (kv.Key == RowIdxColumn) continue;
-            if (_identityColumns.Contains(kv.Key)) continue;
+            if (IsExcludedFromInsert(kv.Key)) continue;
             row[kv.Key] = kv.Value ?? (object)DBNull.Value;
         }
         row[RowIdxColumn] = DBNull.Value;
@@ -1886,7 +1911,7 @@ public class MainForm : Form
         foreach (DataColumn col in _resultsTable.Columns)
         {
             if (col.ColumnName == RowIdxColumn) continue;
-            if (_identityColumns.Contains(col.ColumnName)) continue;
+            if (IsExcludedFromInsert(col.ColumnName)) continue;
             snapshot[col.ColumnName] = source[col];
         }
 
