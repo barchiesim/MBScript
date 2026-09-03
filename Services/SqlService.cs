@@ -53,6 +53,24 @@ public class SqlService : IDisposable
 
     public bool IsConnected => _connection?.State == System.Data.ConnectionState.Open;
 
+    /// <summary>Cambia il database corrente della connessione già aperta. Necessario
+    /// perché le query generate dall'app (SELECT/INSERT/UPDATE/DELETE su una tabella)
+    /// non qualificano il nome del database: senza questo, selezionare un altro
+    /// database nella combo aggiorna solo l'elenco tabelle mostrato (le metadata query
+    /// di DatabaseExplorerService sono già qualificate con "[database]."), ma le query
+    /// vere continuano a girare sul database di login, con errore
+    /// "Invalid object name" per le tabelle che non esistono lì.</summary>
+    public SqlResult<bool> ChangeDatabase(string database)
+    {
+        if (_connection is null) return SqlResult<bool>.Fail("Nessuna connessione attiva.");
+        try
+        {
+            _connection.ChangeDatabase(database);
+            return SqlResult<bool>.Ok(true);
+        }
+        catch (Exception ex) { return SqlResult<bool>.Fail(ex.Message); }
+    }
+
     // ─── Query helpers ────────────────────────────────────────────────────────
 
     public async Task<SqlResult<List<T>>> ExecuteQueryAsync<T>(string query, Func<SqlDataReader, T> mapper)

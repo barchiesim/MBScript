@@ -458,8 +458,19 @@ public class MainForm : Form
                 // Wire the event only now – from here on it fires only on real user interaction
                 cmbDatabases.SelectedIndexChanged += OnDatabaseChanged;
 
+                // La connessione resta aperta sul database di login (impostato da
+                // ConnectAsync in LoginForm), che può differire da quello selezionato
+                // qui (es. LastDatabase da impostazioni salvate, sovrascritto in
+                // _config.Database DOPO il login). Senza allinearla, le query
+                // fallirebbero con "Invalid object name" per le tabelle che esistono
+                // solo nel database selezionato.
+                string initialDb = cmbDatabases.SelectedItem as string ?? _config.Database;
+                SqlResult<bool> changeResult = _sql.ChangeDatabase(initialDb);
+                if (!changeResult.Success)
+                    AddMessage($"❌ Impossibile passare al database {initialDb}: {changeResult.Error}");
+
                 // Load tables for the initially selected db explicitly
-                await LoadTablesAsync(cmbDatabases.SelectedItem as string ?? _config.Database);
+                await LoadTablesAsync(initialDb);
             }
             else
             {
@@ -471,8 +482,23 @@ public class MainForm : Form
 
     private async void OnDatabaseChanged(object? sender, EventArgs e)
     {
-        if (cmbDatabases.SelectedItem is string dbName)
-            await GuardAsync(() => LoadTablesAsync(dbName));
+        if (cmbDatabases.SelectedItem is not string dbName) return;
+
+        await GuardAsync(async () =>
+        {
+            // Le query eseguite dall'app non qualificano il database nel nome tabella:
+            // senza cambiare qui il contesto della connessione, l'elenco tabelle si
+            // aggiornerebbe ma le query girerebbero ancora sul database di login,
+            // con "Invalid object name" per le tabelle che esistono solo in quello nuovo.
+            SqlResult<bool> result = _sql.ChangeDatabase(dbName);
+            if (!result.Success)
+            {
+                AddMessage($"❌ Impossibile passare al database {dbName}: {result.Error}");
+                return;
+            }
+            _config.Database = dbName;
+            await LoadTablesAsync(dbName);
+        });
     }
 
     private async Task LoadTablesAsync(string dbName)
