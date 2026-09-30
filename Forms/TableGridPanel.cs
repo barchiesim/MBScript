@@ -42,17 +42,38 @@ public class TableGridPanel : UserControl
     private const int MaxDistinctFilterValues = 1000;
     private const int HeaderArrowZoneWidth = 18;
 
+    // Tavolozza dell'intestazione: un blu pieno invece del grigio piatto precedente.
+    // I glifi (imbuto/ordinamento/freccia) e il tinteggio di selezione colonna usano
+    // tonalità più chiare per restare leggibili sopra questo sfondo.
+    private static readonly Color HeaderBackColor = Color.FromArgb(42, 90, 150);
+    private static readonly Color HeaderForeColor = Color.White;
+    private static readonly Color HeaderSelectedBackColor = Color.FromArgb(76, 130, 196);
+
+    // Selezione di celle/righe/riga nel corpo della griglia: un azzurro più chiaro e
+    // vivo del precedente, della stessa famiglia del blu dell'intestazione.
+    private static readonly Color CellSelectionBackColor = Color.FromArgb(160, 210, 255);
+    private static readonly Color RowHeaderSelectionBackColor = Color.FromArgb(190, 225, 255);
+
     private readonly BufferedDataGridView _grid;
     private readonly BindingSource _bindingSource = new();
     private DataTable? _dataTable;
     private readonly HashSet<DataRow> _insertedNewRows = new();
     private readonly HashSet<DataRow> _savingNewRows = new();
     private readonly Dictionary<string, ColumnFilter> _columnFilters = new(StringComparer.OrdinalIgnoreCase);
-    private string? _sortColumn;
+    // Colonne ordinate, nell'ordine di ordinamento (prima chiave, seconda chiave, ...).
+    // Una sola voce per l'ordinamento da menu di colonna; più voci per l'ordinamento
+    // combinato su una selezione di colonne stile Access.
+    private List<string> _sortColumns = new();
     private bool _sortAscending = true;
     private bool _filtersSuspended;
     private int _markerRowIndex = -1;
     private bool _cancellingEdit;
+
+    // Selezione di colonne stile Access: un intervallo contiguo in ordine di
+    // visualizzazione fra un'ancora (primo clic) e l'ultima colonna toccata
+    // (Shift+clic per estendere). Usata per l'ordinamento su più colonne insieme.
+    private int? _columnSelectionAnchorDisplayIndex;
+    private int? _columnSelectionEndDisplayIndex;
     private bool _busy;
 
     private readonly Panel _navPanel;
@@ -61,6 +82,11 @@ public class TableGridPanel : UserControl
     private readonly TextBox _txtNavSearch;
     private readonly Button _btnNavFilterState;
     private readonly ContextMenuStrip _contextMenu;
+
+    // Disposizione colonne (ordine + larghezza): persistita per tabella e riapplicata
+    // ogni volta che la si riapre.
+    private readonly System.Windows.Forms.Timer _layoutSaveTimer;
+    private bool _applyingSavedLayout;
 
     #endregion Campi UI e griglia
 
@@ -81,6 +107,13 @@ public class TableGridPanel : UserControl
         _contextMenu = BuildGridContextMenu();
         _grid.ContextMenuStrip = _contextMenu;
 
+        // Debounce: un trascinamento o un ridimensionamento genera molti eventi in
+        // rapida sequenza, non serve scrivere su disco ad ogni pixel.
+        _layoutSaveTimer = new System.Windows.Forms.Timer { Interval = 600 };
+        _layoutSaveTimer.Tick += (_, _) => { _layoutSaveTimer.Stop(); SaveColumnLayout(); };
+        _grid.ColumnDisplayIndexChanged += (_, _) => ScheduleLayoutSave();
+        _grid.ColumnWidthChanged += (_, _) => ScheduleLayoutSave();
+
         (_navPanel, _lblNavPosition, _txtNavRecord, _txtNavSearch, _btnNavFilterState) = BuildNavBar();
 
         Controls.Add(_navPanel);
@@ -93,7 +126,10 @@ public class TableGridPanel : UserControl
     protected override void Dispose(bool disposing)
     {
         if (disposing)
+        {
             _bindingSource.Dispose();
+            _layoutSaveTimer.Dispose();
+        }
         base.Dispose(disposing);
     }
 
@@ -141,12 +177,12 @@ public class TableGridPanel : UserControl
             DataSource = _bindingSource,
             ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
             {
-                BackColor = Color.FromArgb(240, 240, 240),
-                ForeColor = Color.FromArgb(30, 30, 30),
-                Font = new Font("Calibri", 10f),
+                BackColor = HeaderBackColor,
+                ForeColor = HeaderForeColor,
+                Font = new Font("Calibri", 10f, FontStyle.Bold),
                 Alignment = DataGridViewContentAlignment.MiddleLeft,
-                SelectionBackColor = Color.FromArgb(204, 224, 245),
-                SelectionForeColor = Color.FromArgb(30, 30, 30)
+                SelectionBackColor = HeaderSelectedBackColor,
+                SelectionForeColor = HeaderForeColor
             }
         };
         grid.RowPostPaint += (_, e) =>
@@ -165,21 +201,35 @@ public class TableGridPanel : UserControl
         grid.CellEndEdit += (_, e) => _ = OnGridCellEndEditAsync(e.RowIndex, e.ColumnIndex);
         grid.RowValidated += (_, e) => _ = OnGridRowValidatedAsync(e.RowIndex);
         // Intestazioni stile Access: la freccia a destra apre il menu di colonna,
-        // il resto dell'intestazione ordina alternando crescente/decrescente.
+        // il resto dell'intestazione seleziona la colonna (stile Access): clic per una
+        // colonna sola, Shift+clic per estendere a un intervallo di colonne adiacenti.
+        // Tasto destro su una selezione di 2+ colonne ordina su tutte insieme.
         grid.CellPainting += (_, e) => PaintColumnHeader(e);
         grid.ColumnHeaderMouseClick += (_, e) =>
         {
             if (e.ColumnIndex < 0) return;
-            if (e.Button == MouseButtons.Right || IsHeaderArrowClick(e.ColumnIndex, e.X))
+
+            if (IsHeaderArrowClick(e.ColumnIndex, e.X))
             {
                 ShowColumnFilterMenu(e.ColumnIndex);
                 return;
             }
-            if (e.Button == MouseButtons.Left) SortByColumn(e.ColumnIndex);
+
+            if (e.Button == MouseButtons.Right)
+            {
+                ShowHeaderContextForColumn(e.ColumnIndex);
+                return;
+            }
+
+            if (e.Button == MouseButtons.Left)
+                SelectColumnHeader(e.ColumnIndex, extend: (Control.ModifierKeys & Keys.Shift) == Keys.Shift);
         };
         grid.CellMouseDown += (_, e) =>
         {
-            if (e.Button == MouseButtons.Right && e.RowIndex >= 0 && e.ColumnIndex >= 0)
+            if (e.RowIndex < 0) return;
+            // Interagire con una riga di dati abbandona la selezione di colonne in corso.
+            ClearColumnSelection();
+            if (e.Button == MouseButtons.Right && e.ColumnIndex >= 0)
                 grid.CurrentCell = grid.Rows[e.RowIndex].Cells[e.ColumnIndex];
         };
 
@@ -232,7 +282,7 @@ public class TableGridPanel : UserControl
         {
             BackColor = Color.White,
             ForeColor = Color.FromArgb(20, 20, 20),
-            SelectionBackColor = Color.FromArgb(204, 224, 245),
+            SelectionBackColor = CellSelectionBackColor,
             SelectionForeColor = Color.FromArgb(20, 20, 20)
         };
         grid.GridColor = Color.FromArgb(212, 212, 212);
@@ -241,7 +291,7 @@ public class TableGridPanel : UserControl
             BackColor = Color.FromArgb(240, 240, 240),
             ForeColor = Color.FromArgb(30, 30, 30),
             // Il selettore della riga selezionata si evidenzia, come in Access
-            SelectionBackColor = Color.FromArgb(210, 222, 240),
+            SelectionBackColor = RowHeaderSelectionBackColor,
             SelectionForeColor = Color.FromArgb(30, 30, 30)
         };
         // Griglia con linee sottili su tutte le celle (stile datasheet Access)
@@ -396,13 +446,100 @@ public class TableGridPanel : UserControl
         _nonInsertableColumns = new HashSet<string>(await _dbExplorer.GetNonInsertableColumnsAsync(db, table.TableSchema, table.TableName), StringComparer.OrdinalIgnoreCase);
     }
 
+    #region Disposizione colonne persistita
+
+    /// <summary>Chiave con cui la disposizione delle colonne di questa tabella viene
+    /// salvata e ritrovata: <c>null</c> se la scheda non è legata a una tabella
+    /// (es. risultato di una query senza FROM riconoscibile).</summary>
+    private string? TableKey => _tableInfo is null
+        ? null
+        : $"{_tableInfo.TableSchema}.{_tableInfo.TableName}".ToLowerInvariant();
+
+    /// <summary>Riapplica l'ordine e la larghezza delle colonne salvati in precedenza
+    /// per questa tabella. Le colonne non più presenti nel risultato vengono ignorate,
+    /// quelle nuove restano nell'ordine di default in coda.
+    /// Va chiamato quando il pannello fa già parte della gerarchia visibile (dopo che
+    /// la scheda è stata aggiunta a tabResults): impostare DisplayIndex/Width prima che
+    /// il controllo sia realizzato non resta valido, DataGridView li ricalcola non
+    /// appena viene effettivamente mostrato.</summary>
+    public void ApplySavedColumnLayout()
+    {
+        if (TableKey is not string key) return;
+        List<GridColumnLayout>? saved = SettingsService.GetGridLayout(key);
+        if (saved is null || saved.Count == 0) return;
+
+        _applyingSavedLayout = true;
+        try
+        {
+            int displayIndex = 0;
+            foreach (GridColumnLayout entry in saved)
+            {
+                if (!_grid.Columns.Contains(entry.ColumnName)) continue;
+                DataGridViewColumn col = _grid.Columns[entry.ColumnName];
+                if (!col.Visible) continue; // la colonna tecnica non entra nell'ordine salvato
+                col.DisplayIndex = Math.Min(displayIndex++, _grid.Columns.Count - 1);
+                col.Width = Math.Max(20, entry.Width);
+            }
+        }
+        finally { _applyingSavedLayout = false; }
+    }
+
+    /// <summary>Riavvia il timer di salvataggio: assorbe la raffica di eventi generata
+    /// da un trascinamento o da un ridimensionamento in corso.</summary>
+    private void ScheduleLayoutSave()
+    {
+        if (_applyingSavedLayout) return;
+        _layoutSaveTimer.Stop();
+        _layoutSaveTimer.Start();
+    }
+
+    private void SaveColumnLayout()
+    {
+        if (TableKey is not string key) return;
+
+        List<GridColumnLayout> layout = _grid.Columns.Cast<DataGridViewColumn>()
+            .Where(c => c.Name != RowIdxColumn)
+            .OrderBy(c => c.DisplayIndex)
+            .Select(c => new GridColumnLayout { ColumnName = c.Name, DisplayIndex = c.DisplayIndex, Width = c.Width })
+            .ToList();
+
+        SettingsService.SaveGridLayout(key, layout);
+    }
+
+    /// <summary>Riporta le colonne all'ordine e alla larghezza predefiniti (quello
+    /// creato dalla query) e dimentica la disposizione salvata per questa tabella:
+    /// la prossima volta che la si apre riparte da zero.</summary>
+    public void ResetColumnLayout()
+    {
+        _applyingSavedLayout = true;
+        try
+        {
+            foreach (DataGridViewColumn col in _grid.Columns)
+            {
+                // L'ordine di creazione (Index) coincide con l'ordine originale delle
+                // colonne nel risultato della query.
+                col.DisplayIndex = col.Index;
+                if (col.Name == RowIdxColumn) continue;
+                col.Width = Math.Min(220, Math.Max(70, col.HeaderText.Length * 9 + HeaderArrowZoneWidth));
+            }
+        }
+        finally { _applyingSavedLayout = false; }
+
+        if (TableKey is string key) SettingsService.RemoveGridLayout(key);
+        InvalidateColumnHeaders();
+    }
+
+    #endregion Disposizione colonne persistita
+
     private void ResetFiltersAndSort()
     {
         _columnFilters.Clear();
         _filtersSuspended = false;
-        _sortColumn = null;
+        _sortColumns.Clear();
         _sortAscending = true;
         _markerRowIndex = -1;
+        _columnSelectionAnchorDisplayIndex = null;
+        _columnSelectionEndDisplayIndex = null;
         _insertedNewRows.Clear();
         _savingNewRows.Clear();
 
@@ -470,6 +607,10 @@ public class TableGridPanel : UserControl
 
         _grid.ResumeLayout();
         _grid.PerformLayout();
+
+        // La disposizione salvata NON si applica qui: il pannello a questo punto non fa
+        // ancora parte della gerarchia visibile (la scheda viene creata e aggiunta a
+        // tabResults dopo Populate). Va richiamata da chi crea la scheda, a valle.
 
         // Se la larghezza totale supera la larghezza visibile serve un ridisegno.
         if (totalWidth > _grid.ClientSize.Width)
@@ -1047,11 +1188,14 @@ public class TableGridPanel : UserControl
         miClearAllFilters.Click += (_, _) => ClearAllGridFilters();
         var miDeleteRow = new ToolStripMenuItem("Elimina riga/e selezionata/e");
         miDeleteRow.Click += async (_, _) => await GuardAsync(DeleteSelectedGridRowsAsync);
+        var miResetColumnLayout = new ToolStripMenuItem("Ripristina disposizione colonne predefinita");
+        miResetColumnLayout.Click += (_, _) => ResetColumnLayout();
         menu.Items.AddRange(new ToolStripItem[]
         {
             miCopyCell, miCopyRow, miDuplicateRow, miPasteRow, new ToolStripSeparator(),
             miFilterSel, miClearColFilter, miClearAllFilters, new ToolStripSeparator(),
-            miDeleteRow
+            miDeleteRow, new ToolStripSeparator(),
+            miResetColumnLayout
         });
         return menu;
     }
@@ -1311,10 +1455,10 @@ public class TableGridPanel : UserControl
     private void EnsureColumnHeaders()
     {
         _grid.EnableHeadersVisualStyles = false;
-        _grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(240, 240, 240);
-        _grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(30, 30, 30);
-        _grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = Color.FromArgb(204, 224, 245);
-        _grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = Color.FromArgb(30, 30, 30);
+        _grid.ColumnHeadersDefaultCellStyle.BackColor = HeaderBackColor;
+        _grid.ColumnHeadersDefaultCellStyle.ForeColor = HeaderForeColor;
+        _grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = HeaderSelectedBackColor;
+        _grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = HeaderForeColor;
 
         foreach (DataGridViewColumn col in _grid.Columns)
         {
@@ -1437,26 +1581,126 @@ public class TableGridPanel : UserControl
         };
     }
 
-    private void SortByColumn(int columnIndex)
-    {
-        if (_dataTable is null) return;
-        string colName = _grid.Columns[columnIndex].Name;
-        if (colName == RowIdxColumn) return;
-
-        bool ascending = !string.Equals(_sortColumn, colName, StringComparison.OrdinalIgnoreCase) || !_sortAscending;
-        SortColumn(colName, ascending);
-    }
-
+    /// <summary>Ordinamento su una sola colonna, dal menu di intestazione (freccia).</summary>
     private void SortColumn(string colName, bool ascending)
     {
         if (_dataTable is null || colName == RowIdxColumn) return;
 
-        _sortColumn = colName;
+        _sortColumns = new List<string> { colName };
         _sortAscending = ascending;
 
         try { _bindingSource.Sort = $"[{colName}] {(ascending ? "ASC" : "DESC")}"; }
         catch { /* colonna non ordinabile */ }
         InvalidateColumnHeaders(); // il riordino ridisegna già le celle: qui serve solo il glifo
+        UpdateNavLabel();
+    }
+
+    // ─── Selezione di colonne stile Access (ordinamento su più colonne) ────────
+
+    /// <summary>Seleziona una colonna dell'intestazione. Con <paramref name="extend"/>
+    /// estende l'intervallo dall'ancora (il primo clic) fino a questa colonna, come
+    /// Shift+clic sulle intestazioni in Access.</summary>
+    private void SelectColumnHeader(int columnIndex, bool extend)
+    {
+        DataGridViewColumn column = _grid.Columns[columnIndex];
+        if (column.Name == RowIdxColumn) return;
+
+        if (!extend || _columnSelectionAnchorDisplayIndex is null)
+            _columnSelectionAnchorDisplayIndex = column.DisplayIndex;
+        _columnSelectionEndDisplayIndex = column.DisplayIndex;
+        InvalidateColumnHeaders();
+    }
+
+    private void ClearColumnSelection()
+    {
+        if (_columnSelectionAnchorDisplayIndex is null) return;
+        _columnSelectionAnchorDisplayIndex = null;
+        _columnSelectionEndDisplayIndex = null;
+        InvalidateColumnHeaders();
+    }
+
+    private bool IsColumnHeaderSelected(int displayIndex)
+    {
+        if (_columnSelectionAnchorDisplayIndex is not int anchor || _columnSelectionEndDisplayIndex is not int end)
+            return false;
+        int lo = Math.Min(anchor, end);
+        int hi = Math.Max(anchor, end);
+        return displayIndex >= lo && displayIndex <= hi;
+    }
+
+    /// <summary>Colonne attualmente selezionate, in ordine di visualizzazione da
+    /// sinistra a destra: è anche l'ordine delle chiavi di ordinamento combinato.</summary>
+    private List<string> GetSelectedColumnNamesInOrder()
+    {
+        if (_columnSelectionAnchorDisplayIndex is not int anchor || _columnSelectionEndDisplayIndex is not int end)
+            return new List<string>();
+        int lo = Math.Min(anchor, end);
+        int hi = Math.Max(anchor, end);
+
+        return _grid.Columns.Cast<DataGridViewColumn>()
+            .Where(c => c.Visible && c.Name != RowIdxColumn && c.DisplayIndex >= lo && c.DisplayIndex <= hi)
+            .OrderBy(c => c.DisplayIndex)
+            .Select(c => c.Name)
+            .ToList();
+    }
+
+    /// <summary>Tasto destro su un'intestazione: se fa parte di una selezione di 2+
+    /// colonne mostra il menu di ordinamento combinato, altrimenti si comporta come
+    /// prima — seleziona solo questa colonna e apre il menu filtro/ordinamento singolo.</summary>
+    private void ShowHeaderContextForColumn(int columnIndex)
+    {
+        DataGridViewColumn column = _grid.Columns[columnIndex];
+        if (column.Name == RowIdxColumn) return;
+
+        if (IsColumnHeaderSelected(column.DisplayIndex) && GetSelectedColumnNamesInOrder().Count >= 2)
+        {
+            ShowMultiColumnSortMenu(columnIndex);
+            return;
+        }
+
+        SelectColumnHeader(columnIndex, extend: false);
+        ShowColumnFilterMenu(columnIndex);
+    }
+
+    /// <summary>Menu con le sole azioni che hanno senso su più colonne insieme:
+    /// il menu completo (valori/filtro) resta specifico di una singola colonna.</summary>
+    private void ShowMultiColumnSortMenu(int columnIndex)
+    {
+        List<string> names = GetSelectedColumnNamesInOrder();
+        if (names.Count == 0) return;
+
+        ContextMenuStrip menu = new();
+        menu.Closed += (_, _) => menu.BeginInvoke(new Action(menu.Dispose));
+
+        ToolStripMenuItem miAsc = new($"Ordina crescente ({names.Count} colonne)");
+        miAsc.Click += (_, _) => SortBySelectedColumns(true);
+        ToolStripMenuItem miDesc = new($"Ordina decrescente ({names.Count} colonne)");
+        miDesc.Click += (_, _) => SortBySelectedColumns(false);
+        ToolStripMenuItem miClear = new("Deseleziona colonne");
+        miClear.Click += (_, _) => ClearColumnSelection();
+
+        menu.Items.AddRange(new ToolStripItem[] { miAsc, miDesc, new ToolStripSeparator(), miClear });
+        Rectangle headerRect = _grid.GetCellDisplayRectangle(columnIndex, -1, true);
+        menu.Show(_grid, new Point(headerRect.Left, headerRect.Bottom));
+    }
+
+    /// <summary>Ordina per tutte le colonne selezionate insieme, nell'ordine in cui sono
+    /// disposte da sinistra a destra: prima chiave la più a sinistra, come in Access.</summary>
+    private void SortBySelectedColumns(bool ascending)
+    {
+        List<string> names = GetSelectedColumnNamesInOrder();
+        if (names.Count == 0 || _dataTable is null) return;
+
+        _sortColumns = names;
+        _sortAscending = ascending;
+
+        string direction = ascending ? "ASC" : "DESC";
+        string sortExpression = string.Join(", ", names.Select(n => $"[{n}] {direction}"));
+        try { _bindingSource.Sort = sortExpression; }
+        catch { /* combinazione non ordinabile */ }
+
+        ClearColumnSelection();
+        InvalidateColumnHeaders();
         UpdateNavLabel();
     }
 
@@ -1524,9 +1768,22 @@ public class TableGridPanel : UserControl
         DataGridViewColumn column = _grid.Columns[e.ColumnIndex];
         if (column.Name == RowIdxColumn) return;
 
-        // Sfondo e bordi restano quelli nativi: si sostituisce solo il testo per
-        // riservare lo spazio della freccia a destra.
-        e.Paint(e.CellBounds, DataGridViewPaintParts.All & ~DataGridViewPaintParts.ContentForeground);
+        bool columnSelected = IsColumnHeaderSelected(column.DisplayIndex);
+        if (columnSelected)
+        {
+            // Tinta di selezione stile Access: una variante più chiara dell'azzurro
+            // dell'intestazione, bordi nativi.
+            using SolidBrush selectionBrush = new(HeaderSelectedBackColor);
+            e.Graphics.FillRectangle(selectionBrush, e.CellBounds);
+            e.Paint(e.CellBounds, DataGridViewPaintParts.Border);
+        }
+        else
+        {
+            // Sfondo e bordi restano quelli nativi: si sostituisce solo il testo per
+            // riservare lo spazio della freccia a destra.
+            e.Paint(e.CellBounds, DataGridViewPaintParts.All & ~DataGridViewPaintParts.ContentForeground);
+        }
+
         Rectangle textArea = new(
             e.CellBounds.Left + 3,
             e.CellBounds.Top,
@@ -1539,7 +1796,7 @@ public class TableGridPanel : UserControl
         int arrowCenterX = e.CellBounds.Right - HeaderArrowZoneWidth / 2 - 2;
         int centerY = e.CellBounds.Top + e.CellBounds.Height / 2;
         bool filtered = _columnFilters.ContainsKey(column.Name);
-        bool sorted = string.Equals(_sortColumn, column.Name, StringComparison.OrdinalIgnoreCase);
+        bool sorted = _sortColumns.Contains(column.Name, StringComparer.OrdinalIgnoreCase);
 
         if (filtered) DrawFunnelGlyph(e.Graphics, arrowCenterX - 11, centerY);
         else if (sorted) DrawSortGlyph(e.Graphics, arrowCenterX - 11, centerY, _sortAscending);
@@ -1550,8 +1807,10 @@ public class TableGridPanel : UserControl
 
     // Oggetti GDI dei glifi di intestazione: riusati invece di essere allocati
     // a ogni cella di ogni frame (una dozzina di allocazioni per ridisegno).
-    private static readonly SolidBrush GlyphBrush = new(Color.FromArgb(70, 70, 70));
-    private static readonly Pen AccentPen = new(Color.FromArgb(60, 90, 150));
+    // Toni chiari: i glifi si disegnano sopra lo sfondo blu dell'intestazione, non più
+    // sul grigio chiaro di prima.
+    private static readonly SolidBrush GlyphBrush = new(Color.White);
+    private static readonly Pen AccentPen = new(Color.FromArgb(255, 202, 60));
 
     private static void DrawDropDownGlyph(Graphics g, int centerX, int centerY)
     {

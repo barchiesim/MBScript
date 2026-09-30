@@ -25,6 +25,9 @@ public class MainForm : Form
 
     // Guard: prevents re-entrant async calls
     private bool _busy = false;
+    // Evita che la sincronizzazione programmatica dell'elenco tabelle (quando si cambia
+    // scheda) faccia scattare LoadTableStructure e sovrascriva l'editor SQL.
+    private bool _syncingTableList = false;
 
     // ─── Controls ────────────────────────────────────────────────────────────
     private ToolStrip toolStrip = null!;
@@ -247,7 +250,7 @@ public class MainForm : Form
         // Doppio clic: carica la SELECT e la esegue subito, come l'apertura di una
         // tabella in Access. Il singolo clic si limita a preparare lo script.
         lstTables.DoubleClick += (_, _) => { LoadTableStructure(); _ = GuardAsync(ExecuteQueryAsync); };
-        lstTables.SelectedIndexChanged += (_, _) => LoadTableStructure();
+        lstTables.SelectedIndexChanged += (_, _) => { if (!_syncingTableList) LoadTableStructure(); };
 
         pnlLeft.Controls.Add(lstTables);
         pnlLeft.Controls.Add(lblTables);
@@ -339,6 +342,10 @@ public class MainForm : Form
         // TableGridPanel indipendente ciascuna); viene popolata a runtime da
         // OpenTableTabAsync/OpenEmptyTableTabAsync, non qui.
         tabResults = new TabControl { Dock = DockStyle.Fill };
+        // Evidenzia nell'elenco a sinistra la tabella della scheda che diventa attiva,
+        // così il "Cerca tabella" resta coerente con la griglia effettivamente visibile
+        // invece di restare fermo sull'ultima tabella cliccata nell'albero.
+        tabResults.SelectedIndexChanged += (_, _) => SyncTableListSelectionToActiveTab();
         tabText = new TabPage("Testo");
         tabMessages = new TabPage("Messaggi");
 
@@ -561,6 +568,24 @@ public class MainForm : Form
         rtbSqlScript.Refresh();
     }
 
+    /// <summary>Evidenzia nell'elenco a sinistra la tabella della scheda risultati
+    /// appena selezionata, senza toccare l'editor SQL (la sincronizzazione è solo
+    /// visiva: passare da una scheda all'altra non deve sovrascrivere uno script
+    /// che si sta scrivendo).</summary>
+    private void SyncTableListSelectionToActiveTab()
+    {
+        if (tabResults.SelectedTab?.Tag is not TableGridPanel panel || panel.Table is not TableInfo table)
+            return;
+
+        string item = $"[{table.TableSchema}].[{table.TableName}]";
+        int idx = lstTables.Items.IndexOf(item);
+        if (idx < 0 || lstTables.SelectedIndex == idx) return;
+
+        _syncingTableList = true;
+        try { lstTables.SelectedIndex = idx; }
+        finally { _syncingTableList = false; }
+    }
+
     // ─── Query execution ─────────────────────────────────────────────────────
 
     private async Task ExecuteQueryAsync()
@@ -694,6 +719,7 @@ public class MainForm : Form
         {
             ReplaceTabPanel(existingTab, panel);
             tabResults.SelectedTab = existingTab;
+            panel.ApplySavedColumnLayout();
             return;
         }
 
@@ -702,6 +728,10 @@ public class MainForm : Form
         tab.Controls.Add(panel);
         tabResults.TabPages.Add(tab);
         tabResults.SelectedTab = tab;
+        // Solo ora il pannello fa parte della gerarchia visibile: prima, DisplayIndex e
+        // Width impostati non resterebbero validi (DataGridView li ricalcola alla
+        // realizzazione del controllo).
+        panel.ApplySavedColumnLayout();
     }
 
     /// <summary>Apre (o sostituisce) una scheda vuota, pronta per l'inserimento di nuove
@@ -723,6 +753,7 @@ public class MainForm : Form
         {
             ReplaceTabPanel(existingTab, panel);
             tabResults.SelectedTab = existingTab;
+            panel.ApplySavedColumnLayout();
             return;
         }
 
@@ -730,6 +761,7 @@ public class MainForm : Form
         tab.Controls.Add(panel);
         tabResults.TabPages.Add(tab);
         tabResults.SelectedTab = tab;
+        panel.ApplySavedColumnLayout();
     }
 
     /// <summary>Tasto destro su una scheda per chiuderla: ogni scheda tabella è
