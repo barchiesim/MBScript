@@ -341,11 +341,25 @@ public class MainForm : Form
         // "tabResults" ospita una scheda per ogni tabella aperta (una
         // TableGridPanel indipendente ciascuna); viene popolata a runtime da
         // OpenTableTabAsync/OpenEmptyTableTabAsync, non qui.
-        tabResults = new TabControl { Dock = DockStyle.Fill };
+        tabResults = new TabControl { Dock = DockStyle.Fill, DrawMode = TabDrawMode.OwnerDrawFixed };
         // Evidenzia nell'elenco a sinistra la tabella della scheda che diventa attiva,
         // così il "Cerca tabella" resta coerente con la griglia effettivamente visibile
         // invece di restare fermo sull'ultima tabella cliccata nell'albero.
-        tabResults.SelectedIndexChanged += (_, _) => SyncTableListSelectionToActiveTab();
+        tabResults.SelectedIndexChanged += (_, _) => { SyncTableListSelectionToActiveTab(); tabResults.Invalidate(); };
+        // Scheda attiva colorata: stesso blu delle intestazioni di colonna, per far
+        // risaltare a colpo d'occhio quale tabella si sta guardando fra quelle aperte.
+        tabResults.DrawItem += (_, e) =>
+        {
+            TabPage page = tabResults.TabPages[e.Index];
+            bool selected = e.Index == tabResults.SelectedIndex;
+            Color back = selected ? Color.FromArgb(42, 90, 150) : Color.FromArgb(240, 240, 240);
+            Color fore = selected ? Color.White : Color.FromArgb(30, 30, 30);
+
+            using (SolidBrush brush = new(back))
+                e.Graphics.FillRectangle(brush, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, page.Text, tabResults.Font, e.Bounds, fore,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        };
         tabText = new TabPage("Testo");
         tabMessages = new TabPage("Messaggi");
 
