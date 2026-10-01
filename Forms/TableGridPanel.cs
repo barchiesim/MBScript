@@ -228,8 +228,9 @@ public class TableGridPanel : UserControl
         grid.CellMouseDown += (_, e) =>
         {
             if (e.RowIndex < 0) return;
-            // Interagire con una riga di dati abbandona la selezione di colonne in corso.
-            ClearColumnSelection();
+            // Clic su una cella abbandona la selezione di colonne; il selettore di riga no,
+            // così colonne e righe si combinano per Ctrl+C.
+            if (e.ColumnIndex >= 0) ClearColumnSelection();
             if (e.Button == MouseButtons.Right && e.ColumnIndex >= 0)
                 grid.CurrentCell = grid.Rows[e.RowIndex].Cells[e.ColumnIndex];
         };
@@ -240,6 +241,11 @@ public class TableGridPanel : UserControl
 
         grid.KeyDown += (_, e) =>
         {
+            if (e.Control && e.KeyCode == Keys.C && !grid.IsCurrentCellInEditMode && CopySelectionWithHeaders())
+            {
+                e.Handled = true;
+                return;
+            }
             if (e.Control && e.KeyCode == Keys.V && !grid.IsCurrentCellInEditMode)
             {
                 e.Handled = true;
@@ -1292,6 +1298,76 @@ public class TableGridPanel : UserControl
             .OrderBy(c => c.DisplayIndex)
             .ToList();
 
+    /// <summary>Ctrl+C su colonne (intestazioni) e/o righe (selettori) selezionate: copia
+    /// l'incrocio con la riga di intestazione, in TSV per Excel. Restituisce false se non
+    /// c'è né l'una né l'altra selezione, lasciando la copia standard delle celle.</summary>
+    private bool CopySelectionWithHeaders()
+    {
+        string? text = BuildSelectionClipboardText(out int rowCount, out int columnCount);
+        if (text is null) return false;
+
+        try
+        {
+            // Con riprova: gli appunti possono essere tenuti aperti un istante da altre app.
+            Clipboard.SetDataObject(text, true, 10, 100);
+        }
+        catch (Exception ex)
+        {
+            _addMessage($"❌ Copia negli appunti non riuscita: {ex.Message}");
+            return true;
+        }
+
+        _addMessage($"📋 Copiate {rowCount} righe × {columnCount} colonne negli appunti (con intestazioni).");
+        return true;
+    }
+
+    private string? BuildSelectionClipboardText(out int rowCount, out int columnCount)
+    {
+        rowCount = 0;
+        columnCount = 0;
+        List<string> selectedColumnNames = GetSelectedColumnNamesInOrder();
+        List<DataGridViewRow> rows = _grid.SelectedRows.Cast<DataGridViewRow>()
+            .Where(r => !r.IsNewRow)
+            .OrderBy(r => r.Index)
+            .ToList();
+        if (selectedColumnNames.Count == 0 && rows.Count == 0) return null;
+
+        List<DataGridViewColumn> columns = selectedColumnNames.Count > 0
+            ? selectedColumnNames.Select(n => _grid.Columns[n]!).ToList()
+            : ClipboardColumns();
+        if (rows.Count == 0)
+            rows = _grid.Rows.Cast<DataGridViewRow>().Where(r => !r.IsNewRow).ToList();
+
+        static string Clean(object? value) =>
+            (Convert.ToString(value) ?? "").Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
+
+        StringBuilder sb = new();
+        sb.AppendLine(string.Join("\t", columns.Select(c => Clean(c.Name))));
+        foreach (DataGridViewRow row in rows)
+            sb.AppendLine(string.Join("\t", columns.Select(c => Clean(row.Cells[c.Index].FormattedValue))));
+
+        rowCount = rows.Count;
+        columnCount = columns.Count;
+        return sb.ToString();
+    }
+
+    /// <summary>Se la prima riga degli appunti è un'intestazione (tutte le celle sono nomi
+    /// di colonna), restituisce le colonne nell'ordine indicato, per incollare per nome.</summary>
+    private List<DataGridViewColumn>? MapClipboardHeader(string[] firstRow, int totalRows)
+    {
+        if (firstRow.Length < 2 && totalRows < 2) return null;
+
+        List<DataGridViewColumn> mapped = new();
+        foreach (string name in firstRow)
+        {
+            DataGridViewColumn? column = _grid.Columns.Cast<DataGridViewColumn>()
+                .FirstOrDefault(c => c.Name != RowIdxColumn && string.Equals(c.Name, name.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (column is null) return null;
+            mapped.Add(column);
+        }
+        return mapped;
+    }
+
     /// <summary>Spezza il testo degli appunti in righe e celle (formato TSV, come Excel/Access).</summary>
     private static List<string[]> ParseClipboardGrid(string text)
     {
@@ -1380,8 +1456,17 @@ public class TableGridPanel : UserControl
         List<string[]> clipboardRows = ParseClipboardGrid(text);
         if (clipboardRows.Count == 0) return;
 
+        List<DataGridViewColumn> columns = ClipboardColumns();
+        List<DataGridViewColumn>? headerColumns = MapClipboardHeader(clipboardRows[0], clipboardRows.Count);
+        if (headerColumns is not null)
+        {
+            columns = headerColumns;
+            clipboardRows.RemoveAt(0);
+            if (clipboardRows.Count == 0) return;
+        }
+
         // Valore singolo su una riga esistente: si comporta come una normale modifica di cella
-        bool singleValue = clipboardRows.Count == 1 && clipboardRows[0].Length == 1;
+        bool singleValue = headerColumns is null && clipboardRows.Count == 1 && clipboardRows[0].Length == 1;
         if (singleValue && _grid.CurrentCell is not null && _grid.CurrentRow is not null
             && !_grid.CurrentRow.IsNewRow)
         {
@@ -1408,7 +1493,6 @@ public class TableGridPanel : UserControl
             }
         }
 
-        List<DataGridViewColumn> columns = ClipboardColumns();
         DataRow? firstPasted = null;
         int pasted = 0;
 
