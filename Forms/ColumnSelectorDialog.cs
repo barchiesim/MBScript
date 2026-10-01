@@ -17,6 +17,12 @@ public class ColumnSelectorDialog : Form
         var allCols = allColumns.ToList();
         bool isDel  = scriptType.Equals("DELETE", StringComparison.OrdinalIgnoreCase);
 
+        // Layout a coordinate assolute pensato per 96 DPI: senza queste due righe, su
+        // un monitor ad alto DPI i controlli restano sovrapposti (stessa causa del
+        // disallineamento visto nell'intestazione della griglia).
+        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleDimensions = new SizeF(96f, 96f);
+
         Text            = $"Seleziona colonne per {scriptType} – {tableName}";
         Size            = new Size(620, 520);
         FormBorderStyle = FormBorderStyle.FixedDialog;

@@ -10,6 +10,12 @@ public class AuditFilterDialog : Form
 
     public AuditFilterDialog(string selectedDb, string initialFilter, string initialExclude)
     {
+        // Layout a coordinate assolute pensato per 96 DPI: senza queste due righe, su
+        // un monitor ad alto DPI i controlli restano sovrapposti (stessa causa del
+        // disallineamento visto nell'intestazione della griglia).
+        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleDimensions = new SizeF(96f, 96f);
+
         Text            = "Configurazione Filtri Audit";
         Size            = new Size(640, 300);
         FormBorderStyle = FormBorderStyle.FixedDialog;

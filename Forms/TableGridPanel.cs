@@ -40,7 +40,10 @@ public class TableGridPanel : UserControl
 
     private const string RowIdxColumn = "__RowIdx";
     private const int MaxDistinctFilterValues = 1000;
-    private const int HeaderArrowZoneWidth = 18;
+    // Tutte le misure della griglia derivano dall'altezza del font (pixel reali al DPI
+    // corrente): il pannello nasce a runtime, fuori dall'auto-scale del form, quindi
+    // pixel letterali resterebbero a misura di 96 DPI anche con Windows al 250%.
+    private int HeaderArrowZoneWidth => _grid.ColumnHeadersDefaultCellStyle.Font.Height + 2;
 
     // Tavolozza dell'intestazione: un blu pieno invece del grigio piatto precedente.
     // I glifi (imbuto/ordinamento/freccia) e il tinteggio di selezione colonna usano
@@ -164,13 +167,11 @@ public class TableGridPanel : UserControl
             MultiSelect = true,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
             Font = new Font("Calibri", 10f),
-            RowHeadersWidth = 26,
             ScrollBars = ScrollBars.Both,
             AllowUserToResizeColumns = true,
             AllowUserToResizeRows = true,
             AllowUserToOrderColumns = true,
             ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
-            ColumnHeadersHeight = 24,
             ColumnHeadersVisible = true,
             AutoGenerateColumns = true,
             EnableHeadersVisualStyles = false,
@@ -294,8 +295,10 @@ public class TableGridPanel : UserControl
             SelectionBackColor = RowHeaderSelectionBackColor,
             SelectionForeColor = Color.FromArgb(30, 30, 30)
         };
+        grid.RowTemplate.Height = grid.Font.Height + 5;
+        grid.ColumnHeadersHeight = grid.ColumnHeadersDefaultCellStyle.Font.Height + 8;
+        grid.RowHeadersWidth = TextRenderer.MeasureText("►", grid.Font).Width + 12;
         // Griglia con linee sottili su tutte le celle (stile datasheet Access)
-        grid.RowTemplate.Height = 21;
         grid.CellBorderStyle = DataGridViewCellBorderStyle.Single;
         grid.DefaultCellStyle.Padding = new Padding(3, 1, 3, 1);
         grid.ColumnHeadersDefaultCellStyle.Padding = new Padding(3, 0, 3, 0);
@@ -310,7 +313,11 @@ public class TableGridPanel : UserControl
     private (Panel panel, Label lblPosition, TextBox txtRecord, TextBox txtSearch, Button btnFilterState) BuildNavBar()
     {
         // Layout: Record: |◄ ◄ [n] di N ► ►| ►*   Nessun filtro   Cerca: [   ]
-        Panel navPanel = new() { Dock = DockStyle.Bottom, Height = 28, BackColor = Color.FromArgb(240, 240, 240) };
+        Font navFont = new("Segoe UI", 8f);
+        int row = navFont.Height + 9;
+        int TextWidth(string sample) => TextRenderer.MeasureText(sample, navFont).Width + 6;
+
+        Panel navPanel = new() { Dock = DockStyle.Bottom, Height = row + 6, BackColor = Color.FromArgb(240, 240, 240) };
         FlowLayoutPanel flowNav = new()
         {
             Dock = DockStyle.Fill,
@@ -319,13 +326,13 @@ public class TableGridPanel : UserControl
             Padding = new Padding(4, 3, 0, 0)
         };
 
-        static Button BuildNavButton(NavGlyph glyph, string tooltip)
+        Button BuildNavButton(NavGlyph glyph, string tooltip)
         {
             Button b = new()
             {
                 Text = "",
-                Width = 24,
-                Height = 22,
+                Width = row + 2,
+                Height = row,
                 Margin = new Padding(0, 0, 1, 0),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.FromArgb(240, 240, 240),
@@ -336,20 +343,25 @@ public class TableGridPanel : UserControl
             b.FlatAppearance.MouseDownBackColor = Color.FromArgb(195, 215, 240);
             // I glifi sono disegnati a mano: i caratteri Unicode ◄ ► dipendono dal
             // fallback dei font e risultano illeggibili a questa dimensione.
-            b.Paint += (s, e) => DrawNavGlyph(e.Graphics, ((Button)s!).ClientRectangle, glyph, ((Button)s!).Enabled);
+            b.Paint += (s, e) =>
+            {
+                Rectangle r = ((Button)s!).ClientRectangle;
+                DrawScaledGlyph(e.Graphics, r.Width / 2, r.Height / 2, e.Graphics.DpiX / 96f,
+                    () => DrawNavGlyph(e.Graphics, r, glyph, ((Button)s!).Enabled));
+            };
             new ToolTip().SetToolTip(b, tooltip);
             return b;
         }
 
-        static Label BuildNavLabel(string text, int width) => new()
+        Label BuildNavLabel(string text, string widthSample) => new()
         {
             Text = text,
             AutoSize = false,
-            Width = width,
-            Height = 22,
+            Width = TextWidth(widthSample),
+            Height = row,
             Margin = new Padding(2, 0, 2, 0),
             TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font("Segoe UI", 8f),
+            Font = navFont,
             ForeColor = Color.FromArgb(40, 40, 40)
         };
 
@@ -361,24 +373,23 @@ public class TableGridPanel : UserControl
 
         TextBox txtRecord = new()
         {
-            Width = 42,
-            Height = 22,
+            Width = TextWidth("999999"),
             Margin = new Padding(2, 0, 2, 0),
             TextAlign = HorizontalAlignment.Center,
-            Font = new Font("Segoe UI", 8f),
+            Font = navFont,
             BorderStyle = BorderStyle.FixedSingle
         };
-        Label lblPosition = BuildNavLabel("di 0", 52);
+        Label lblPosition = BuildNavLabel("di 0", "di 9999999");
 
         Button btnFilterState = new()
         {
             Text = "Nessun filtro",
-            Width = 86,
-            Height = 22,
+            Width = TextWidth("Nessun filtro") + 10,
+            Height = row,
             Margin = new Padding(10, 0, 2, 0),
             FlatStyle = FlatStyle.Flat,
             BackColor = Color.FromArgb(240, 240, 240),
-            Font = new Font("Segoe UI", 8f),
+            Font = navFont,
             TextAlign = ContentAlignment.MiddleCenter,
             TabStop = false,
             Enabled = false
@@ -388,10 +399,9 @@ public class TableGridPanel : UserControl
 
         TextBox txtSearch = new()
         {
-            Width = 150,
-            Height = 22,
+            Width = TextWidth("XXXXXXXXXXXXXXXXXXXX"),
             Margin = new Padding(2, 0, 2, 0),
-            Font = new Font("Segoe UI", 8f),
+            Font = navFont,
             BorderStyle = BorderStyle.FixedSingle
         };
 
@@ -412,7 +422,7 @@ public class TableGridPanel : UserControl
         _bindingSource.PositionChanged += (_, _) => UpdateNavLabel();
         _bindingSource.ListChanged += (_, _) => UpdateNavLabel();
 
-        flowNav.Controls.Add(BuildNavLabel("Record:", 50));
+        flowNav.Controls.Add(BuildNavLabel("Record:", "Record:"));
         flowNav.Controls.Add(btnNavFirst);
         flowNav.Controls.Add(btnNavPrev);
         flowNav.Controls.Add(txtRecord);
@@ -421,7 +431,7 @@ public class TableGridPanel : UserControl
         flowNav.Controls.Add(btnNavLast);
         flowNav.Controls.Add(btnNavNew);
         flowNav.Controls.Add(btnFilterState);
-        flowNav.Controls.Add(BuildNavLabel("Cerca:", 40));
+        flowNav.Controls.Add(BuildNavLabel("Cerca:", "Cerca:"));
         flowNav.Controls.Add(txtSearch);
         navPanel.Controls.Add(flowNav);
 
@@ -464,9 +474,17 @@ public class TableGridPanel : UserControl
     /// appena viene effettivamente mostrato.</summary>
     public void ApplySavedColumnLayout()
     {
-        if (TableKey is not string key) return;
-        List<GridColumnLayout>? saved = SettingsService.GetGridLayout(key);
-        if (saved is null || saved.Count == 0) return;
+        List<GridColumnLayout>? saved = TableKey is string key ? SettingsService.GetGridLayout(key) : null;
+        if (saved is null || saved.Count == 0)
+        {
+            // Nessuna disposizione salvata: la larghezza calcolata da Populate() non è
+            // comunque rimasta valida (stesso motivo per cui DisplayIndex non restava
+            // valido), quindi va riapplicata qui — altrimenti ogni tabella aperta per
+            // la prima volta mostra colonne tutte alla larghezza predefinita di 100px,
+            // indipendentemente dal testo dell'intestazione.
+            ApplyDefaultColumnWidths();
+            return;
+        }
 
         _applyingSavedLayout = true;
         try
@@ -479,6 +497,22 @@ public class TableGridPanel : UserControl
                 if (!col.Visible) continue; // la colonna tecnica non entra nell'ordine salvato
                 col.DisplayIndex = Math.Min(displayIndex++, _grid.Columns.Count - 1);
                 col.Width = Math.Max(20, entry.Width);
+            }
+        }
+        finally { _applyingSavedLayout = false; }
+    }
+
+    /// <summary>Larghezza calcolata dal testo di ogni intestazione: usata quando la
+    /// tabella non ha ancora una disposizione salvata.</summary>
+    private void ApplyDefaultColumnWidths()
+    {
+        _applyingSavedLayout = true;
+        try
+        {
+            foreach (DataGridViewColumn col in _grid.Columns)
+            {
+                if (col.Name == RowIdxColumn) continue;
+                col.Width = ComputeColumnWidth(col.HeaderText);
             }
         }
         finally { _applyingSavedLayout = false; }
@@ -520,7 +554,7 @@ public class TableGridPanel : UserControl
                 // colonne nel risultato della query.
                 col.DisplayIndex = col.Index;
                 if (col.Name == RowIdxColumn) continue;
-                col.Width = Math.Min(220, Math.Max(70, col.HeaderText.Length * 9 + HeaderArrowZoneWidth));
+                col.Width = ComputeColumnWidth(col.HeaderText);
             }
         }
         finally { _applyingSavedLayout = false; }
@@ -547,6 +581,17 @@ public class TableGridPanel : UserControl
         catch { /* nessuna sorgente associata */ }
         try { _bindingSource.Sort = ""; }
         catch { /* nessuna sorgente associata */ }
+    }
+
+    /// <summary>Larghezza di una colonna in base al testo REALE dell'intestazione,
+    /// misurato con il font effettivo (grassetto, dallo sfondo blu). Prima si stimava
+    /// con "9 px per carattere": una sottostima quando il font è in grassetto o su
+    /// schermi ad alto DPI, che faceva troncare/accavallare il testo delle colonne.</summary>
+    private int ComputeColumnWidth(string headerText)
+    {
+        Font headerFont = _grid.ColumnHeadersDefaultCellStyle.Font;
+        int textWidth = TextRenderer.MeasureText(headerText, headerFont).Width;
+        return Math.Min(headerFont.Height * 14, Math.Max(headerFont.Height * 4, textWidth + HeaderArrowZoneWidth + 10));
     }
 
     public void Populate(List<Dictionary<string, object?>> rows)
@@ -601,7 +646,7 @@ public class TableGridPanel : UserControl
             if (col.Name == RowIdxColumn) { col.Visible = false; continue; }
             col.HeaderText = col.Name;
             // Lo spazio della freccia del menu di colonna va aggiunto alla larghezza utile
-            col.Width = Math.Min(220, Math.Max(70, col.HeaderText.Length * 9 + HeaderArrowZoneWidth));
+            col.Width = ComputeColumnWidth(col.HeaderText);
             totalWidth += col.Width;
         }
 
@@ -647,7 +692,7 @@ public class TableGridPanel : UserControl
         {
             if (col.Name == RowIdxColumn) { col.Visible = false; continue; }
             col.HeaderText = col.Name;
-            col.Width = Math.Min(220, Math.Max(70, col.HeaderText.Length * 9 + HeaderArrowZoneWidth));
+            col.Width = ComputeColumnWidth(col.HeaderText);
         }
 
         UpdateNavLabel();
@@ -1798,11 +1843,26 @@ public class TableGridPanel : UserControl
         bool filtered = _columnFilters.ContainsKey(column.Name);
         bool sorted = _sortColumns.Contains(column.Name, StringComparer.OrdinalIgnoreCase);
 
-        if (filtered) DrawFunnelGlyph(e.Graphics, arrowCenterX - 11, centerY);
-        else if (sorted) DrawSortGlyph(e.Graphics, arrowCenterX - 11, centerY, _sortAscending);
+        float glyphScale = e.Graphics.DpiX / 96f;
+        int secondaryX = arrowCenterX - (int)Math.Round(11 * glyphScale);
 
-        DrawDropDownGlyph(e.Graphics, arrowCenterX, centerY);
+        if (filtered) DrawScaledGlyph(e.Graphics, secondaryX, centerY, glyphScale, () => DrawFunnelGlyph(e.Graphics, secondaryX, centerY));
+        else if (sorted) DrawScaledGlyph(e.Graphics, secondaryX, centerY, glyphScale, () => DrawSortGlyph(e.Graphics, secondaryX, centerY, _sortAscending));
+
+        DrawScaledGlyph(e.Graphics, arrowCenterX, centerY, glyphScale, () => DrawDropDownGlyph(e.Graphics, arrowCenterX, centerY));
         e.Handled = true;
+    }
+
+    // I glifi sono definiti in pixel a 96 DPI: li ingrandisce attorno al loro centro.
+    private static void DrawScaledGlyph(Graphics g, int centerX, int centerY, float scale, Action draw)
+    {
+        System.Drawing.Drawing2D.GraphicsState state = g.Save();
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.TranslateTransform(centerX, centerY);
+        g.ScaleTransform(scale, scale);
+        g.TranslateTransform(-centerX, -centerY);
+        draw();
+        g.Restore(state);
     }
 
     // Oggetti GDI dei glifi di intestazione: riusati invece di essere allocati

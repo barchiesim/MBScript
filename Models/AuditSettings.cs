@@ -12,4 +12,12 @@ public class AuditSettings
     public string LastDatabase { get; set; } = string.Empty;
     // Last connected user
     public string LastUser { get; set; } = string.Empty;
+    // Posizione/dimensioni della finestra principale in pixel reali (0 = mai salvate)
+    public int WindowLeft { get; set; }
+    public int WindowTop { get; set; }
+    public int WindowWidth { get; set; }
+    public int WindowHeight { get; set; }
+    public bool WindowMaximized { get; set; }
+    public int SplitterLeft { get; set; }
+    public int SplitterTop { get; set; }
 }

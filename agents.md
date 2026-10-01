@@ -1,8 +1,8 @@
-# Agent Instructions — PBScriptNewCS
+# Agent Instructions — MBScript
 
 ## Project Overview
 
-`PBScriptNew` è un'applicazione desktop **Windows Forms** scritta in **C# / .NET 8**.  
+`MBScript` è un'applicazione desktop **Windows Forms** scritta in **C# / .NET 8**.  
 Fornisce strumenti per esplorare database SQL, generare script SQL e produrre script di audit.
 
 ---
@@ -22,7 +22,7 @@ Fornisce strumenti per esplorare database SQL, generare script SQL e produrre sc
 ## Repository Structure
 
 ```
-PBScriptNewCS/
+MBScript/
 ├── Program.cs                  # Entrypoint
 ├── appsettings.json            # Configurazione runtime
 ├── Config/
@@ -146,12 +146,12 @@ dotnet build -c Release
 dotnet test
 
 # Avvio
-dotnet run --project PBScriptNewCS.csproj
+dotnet run --project MBScript.csproj
 ```
 
-> Il file di soluzione è `PBScriptNewCS.sln`. Per build con MSBuild usare flag espliciti, es.:
+> Il file di soluzione è `MBScript.sln`. Per build con MSBuild usare flag espliciti, es.:
 > ```bash
-> msbuild PBScriptNewCS.sln /p:Configuration=Release
+> msbuild MBScript.sln /p:Configuration=Release
 > ```
 
 ---
@@ -227,7 +227,7 @@ dotnet run --project PBScriptNewCS.csproj
 ## Repository Structure
 
 ```
-PBScriptNewCS/
+MBScript/
 ├── Program.cs                  # Entrypoint
 ├── appsettings.json            # Configurazione runtime
 ├── Config/
@@ -336,12 +336,12 @@ dotnet build -c Release
 dotnet test
 
 # Avvio
-dotnet run --project PBScriptNewCS.csproj
+dotnet run --project MBScript.csproj
 ```
 
-> Il file di soluzione è `PBScriptNewCS.sln`. Per build con MSBuild usare flag espliciti, es.:
+> Il file di soluzione è `MBScript.sln`. Per build con MSBuild usare flag espliciti, es.:
 > ```bash
-> msbuild PBScriptNewCS.sln /p:Configuration=Release
+> msbuild MBScript.sln /p:Configuration=Release
 > ```
 
 ---
@@ -358,7 +358,7 @@ dotnet run --project PBScriptNewCS.csproj
 ## Structure
 
 ```
-PBScriptNewCS/
+MBScript/
 ├── Config/        # Costanti e configurazioni globali — NON logica di business
 ├── Forms/         # Solo UI: nessun accesso diretto al DB
 ├── Models/        # DTO puri: nessuna logica, solo dati

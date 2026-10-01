@@ -22,6 +22,8 @@ public class MainForm : Form
     // Contatore di riserva per intitolare le schede quando lo script eseguito non ha
     // un FROM/UPDATE/INSERT INTO riconoscibile (es. una stored procedure).
     private int _queryTabSeq;
+    // Dimensioni finestra e splitter salvate alla chiusura precedente.
+    private AuditSettings _savedLayout = new();
 
     // Guard: prevents re-entrant async calls
     private bool _busy = false;
@@ -101,8 +103,36 @@ public class MainForm : Form
 
         InitializeComponent();
 
+        _savedLayout = auditSettings;
+        if (GetSavedWindowBounds() is not null)
+            StartPosition = FormStartPosition.Manual;
+        // Le dimensioni salvate sono pixel reali: vanno applicate nel Load, dopo la
+        // scalatura DPI automatica, altrimenti verrebbero ingrandite una seconda volta.
+        Load += (_, _) => RestoreWindowBounds();
+
         // Both splitter setup and initial data load happen after the form is fully visible
         Shown += OnFormShown;
+    }
+
+    private Rectangle? GetSavedWindowBounds()
+    {
+        if (_savedLayout.WindowWidth <= 0 || _savedLayout.WindowHeight <= 0) return null;
+
+        Rectangle saved = new(_savedLayout.WindowLeft, _savedLayout.WindowTop, _savedLayout.WindowWidth, _savedLayout.WindowHeight);
+        // Se nel frattempo è cambiato il monitor (scollegato, risoluzione diversa) la
+        // finestra salvata potrebbe cadere fuori schermo: in quel caso si ignora.
+        bool visible = Screen.AllScreens.Any(sc => sc.WorkingArea.IntersectsWith(saved));
+        return visible ? saved : null;
+    }
+
+    private void RestoreWindowBounds()
+    {
+        Rectangle? saved = GetSavedWindowBounds();
+        if (saved is null) return;
+
+        Bounds = saved.Value;
+        if (_savedLayout.WindowMaximized)
+            WindowState = FormWindowState.Maximized;
     }
 
     private async void OnFormShown(object? sender, EventArgs e)
@@ -113,42 +143,9 @@ public class MainForm : Form
         // Force layout to complete before setting splitters
         Application.DoEvents();
 
-        // Imposta MinSize e SplitterDistance ora che il form ha dimensioni reali
-        try
-        {
-            // Per lo splitter orizzontale
-            splitMain.Panel1MinSize = 150;
-            splitMain.Panel2MinSize = 400;
-
-            int targetDistance = 250;
-            int maxAllowed = splitMain.ClientSize.Width - splitMain.Panel2MinSize - splitMain.SplitterWidth;
-
-            if (maxAllowed > splitMain.Panel1MinSize && targetDistance <= maxAllowed)
-                splitMain.SplitterDistance = targetDistance;
-            else if (maxAllowed > splitMain.Panel1MinSize)
-                splitMain.SplitterDistance = splitMain.Panel1MinSize;
-
-            splitMain.IsSplitterFixed = false;  // Sblocca lo splitter per permettere all'utente di spostarlo
-        }
-        catch { /* ignore splitter errors */ }
-
-        try
-        {
-            // Per lo splitter verticale
-            splitRight.Panel1MinSize = 60;
-            splitRight.Panel2MinSize = 120;
-
-            int targetDistance = 180;
-            int maxAllowed = splitRight.ClientSize.Height - splitRight.Panel2MinSize - splitRight.SplitterWidth;
-
-            if (maxAllowed > splitRight.Panel1MinSize && targetDistance <= maxAllowed)
-                splitRight.SplitterDistance = targetDistance;
-            else if (maxAllowed > splitRight.Panel1MinSize)
-                splitRight.SplitterDistance = splitRight.Panel1MinSize;
-
-            splitRight.IsSplitterFixed = false;  // Sblocca lo splitter per permettere all'utente di spostarlo
-        }
-        catch { /* ignore splitter errors */ }
+        // Splitter calcolati da misure reali (testo e dimensione finestra), mai da pixel
+        // fissi: a 250% di scala i pixel letterali non corrispondono più a nulla.
+        ApplySplitterLayout();
 
         // Restore UI persisted settings
         try
@@ -161,11 +158,71 @@ public class MainForm : Form
         catch { }
     }
 
+    private void ApplySplitterLayout()
+    {
+        // Prima la distanza, poi i minimi: impostare un MinSize maggiore della
+        // distanza corrente (default 50) solleva eccezione e prima veniva ingoiata
+        // in silenzio, lasciando il pannello sinistro alla larghezza di default.
+        int width = splitMain.ClientSize.Width;
+        int listWidth = TextRenderer.MeasureText("[dbo].[XXXXXXXXXXXXXXXXXXXXXXX]", lstTables.Font).Width
+                        + SystemInformation.VerticalScrollBarWidth + 8;
+        int leftMin = Math.Min(TextRenderer.MeasureText("[dbo].[XXXXXXXX]", lstTables.Font).Width, width / 5);
+        int rightMin = width / 3;
+        int leftTarget = Math.Clamp(_savedLayout.SplitterLeft > 0 ? _savedLayout.SplitterLeft : listWidth, leftMin, Math.Max(leftMin, width - rightMin - splitMain.SplitterWidth));
+
+        try
+        {
+            splitMain.SplitterDistance = leftTarget;
+            splitMain.Panel1MinSize = leftMin;
+            splitMain.Panel2MinSize = rightMin;
+        }
+        catch (Exception ex)
+        {
+            lstMessages.Items.Add($"Layout splitter sinistro: {ex.Message}");
+        }
+
+        splitMain.IsSplitterFixed = false;
+
+        int height = splitRight.ClientSize.Height;
+        int line = Font.Height;
+        int topMin = Math.Min(line * 4, height / 4);
+        int bottomMin = Math.Min(line * 6, height / 3);
+        int topTarget = Math.Clamp(_savedLayout.SplitterTop > 0 ? _savedLayout.SplitterTop : height / 4, topMin, Math.Max(topMin, height - bottomMin - splitRight.SplitterWidth));
+
+        try
+        {
+            splitRight.SplitterDistance = topTarget;
+            splitRight.Panel1MinSize = topMin;
+            splitRight.Panel2MinSize = bottomMin;
+        }
+        catch (Exception ex)
+        {
+            lstMessages.Items.Add($"Layout splitter editor: {ex.Message}");
+        }
+
+        splitRight.IsSplitterFixed = false;
+    }
+
+    private static void SizeSearchBar(Panel bar, TextBox box, Label counter, params Button[] buttons)
+    {
+        bar.Height = box.PreferredHeight + bar.Padding.Vertical;
+        counter.Width = TextRenderer.MeasureText("999 / 999", counter.Font).Width + 8;
+        foreach (Button button in buttons)
+            button.Width = box.PreferredHeight;
+    }
+
     // ─── UI Build ────────────────────────────────────────────────────────────
 
     private void InitializeComponent()
     {
-        Text = $"PBScript – SQL Explorer – {_config.Server} – {_config.Database}";
+        // Senza queste due righe, le altezze/larghezze fisse dei pannelli (Height=20,
+        // Width=26, ecc. usate sotto con Dock=Top/Right) restano letteralmente quei
+        // pixel anche a scale di sistema molto alte (confermato 250% dall'utente),
+        // diventando strisce sottilissime. AutoScaleMode.Dpi le scala insieme al form.
+        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleDimensions = new SizeF(96f, 96f);
+
+        Text = $"MBScript – SQL Explorer – {_config.Server} – {_config.Database}";
         Size = new Size(1200, 800);
         MinimumSize = new Size(800, 600);
         StartPosition = FormStartPosition.CenterScreen;
@@ -229,6 +286,9 @@ public class MainForm : Form
         lblStatusLoading = new ToolStripStatusLabel("") { Spring = true, TextAlign = ContentAlignment.MiddleRight };
         lblStatusLine = new ToolStripStatusLabel("Ln 1") { BorderSides = ToolStripStatusLabelBorderSides.Left, AutoSize = false, Width = 55, TextAlign = ContentAlignment.MiddleCenter };
         lblStatusCol  = new ToolStripStatusLabel("Col 1") { BorderSides = ToolStripStatusLabelBorderSides.Left, AutoSize = false, Width = 55, TextAlign = ContentAlignment.MiddleCenter };
+        int lineColWidth = TextRenderer.MeasureText("Col 99999", statusBar.Font).Width + 8;
+        lblStatusLine.Width = lineColWidth;
+        lblStatusCol.Width = lineColWidth;
         statusBar.Items.AddRange(new ToolStripItem[] { lblStatusServer, new ToolStripSeparator(), lblStatusDb, new ToolStripSeparator(), lblStatusUser, lblStatusLoading, lblStatusLine, lblStatusCol });
         Controls.Add(statusBar);
     }
@@ -239,13 +299,13 @@ public class MainForm : Form
 
         // ── Left panel ───────────────────────────────────────────────────────
         var pnlLeft = new Panel { Dock = DockStyle.Fill };
-        var lblDb = new Label { Text = "Database:", Dock = DockStyle.Top, Height = 20, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) };
+        var lblDb = new Label { Text = "Database:", Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 3, 0, 2), Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) };
         cmbDatabases = new ComboBox { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 8f) };
         // NOTE: SelectedIndexChanged is wired AFTER population to avoid spurious calls
-        var lblSearch = new Label { Text = "Cerca tabella:", Dock = DockStyle.Top, Height = 20, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) };
+        var lblSearch = new Label { Text = "Cerca tabella:", Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 3, 0, 2), Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) };
         txtTableSearch = new TextBox { Dock = DockStyle.Top, PlaceholderText = "Cerca tabella...", Font = new Font("Segoe UI", 8f) };
         txtTableSearch.TextChanged += (_, _) => FilterTableList();
-        var lblTables = new Label { Text = "Tabelle:", Dock = DockStyle.Top, Height = 20, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) };
+        var lblTables = new Label { Text = "Tabelle:", Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 3, 0, 2), Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) };
         lstTables = new ListBox { Dock = DockStyle.Fill, Font = new Font("Courier New", 7.5f) };
         // Doppio clic: carica la SELECT e la esegue subito, come l'apertura di una
         // tabella in Access. Il singolo clic si limita a preparare lo script.
@@ -282,7 +342,7 @@ public class MainForm : Form
         // MinSize impostato in OnFormShown per evitare validazione prematura
 
         var pnlSql = new Panel { Dock = DockStyle.Fill };
-        var lblSql = new Label { Text = "Script SQL:", Dock = DockStyle.Top, Height = 20, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) };
+        var lblSql = new Label { Text = "Script SQL:", Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 3, 0, 2), Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) };
 
         // ── Barra di ricerca (Ctrl+F) ──────────────────────────────────────
         pnlSearch = new Panel { Dock = DockStyle.Top, Height = 26, Visible = false, BackColor = SystemColors.Info, Padding = new Padding(2) };
@@ -291,6 +351,7 @@ public class MainForm : Form
         Button btnFindNext = new Button { Dock = DockStyle.Right, Width = 26, Text = "▼", FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 7f) };
         Button btnFindPrev = new Button { Dock = DockStyle.Right, Width = 26, Text = "▲", FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 7f) };
         Button btnCloseSearch = new Button { Dock = DockStyle.Right, Width = 26, Text = "✕", FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 7f) };
+        SizeSearchBar(pnlSearch, txtSearch, lblSearchCount, btnFindNext, btnFindPrev, btnCloseSearch);
         btnFindNext.Click += (_, _) => FindInRtb(rtbSqlScript, txtSearch, lblSearchCount, forward: true);
         btnFindPrev.Click += (_, _) => FindInRtb(rtbSqlScript, txtSearch, lblSearchCount, forward: false);
         btnCloseSearch.Click += (_, _) => CloseSearchRtb(pnlSearch, lblSearchCount, rtbSqlScript);
@@ -372,6 +433,7 @@ public class MainForm : Form
         Button btnGenFindNext = new Button { Dock = DockStyle.Right, Width = 26, Text = "▼", FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 7f) };
         Button btnGenFindPrev = new Button { Dock = DockStyle.Right, Width = 26, Text = "▲", FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 7f) };
         Button btnGenClose = new Button { Dock = DockStyle.Right, Width = 26, Text = "✕", FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 7f) };
+        SizeSearchBar(pnlSearchGen, txtSearchGen, lblSearchCountGen, btnGenFindNext, btnGenFindPrev, btnGenClose);
         btnGenFindNext.Click += (_, _) => FindInRtb(rtbGeneratedScript, txtSearchGen, lblSearchCountGen, forward: true);
         btnGenFindPrev.Click += (_, _) => FindInRtb(rtbGeneratedScript, txtSearchGen, lblSearchCountGen, forward: false);
         btnGenClose.Click += (_, _) => CloseSearchRtb(pnlSearchGen, lblSearchCountGen, rtbGeneratedScript);
@@ -461,7 +523,7 @@ public class MainForm : Form
         {
             var info = await _sql.GetServerInfoAsync();
             if (info is not null)
-                Text = $"PBScript – SQL Explorer – {info.ServerName} – {_config.Database}";
+                Text = $"MBScript – SQL Explorer – {info.ServerName} – {_config.Database}";
 
             var dbResult = await _dbExplorer.GetDatabasesAsync();
             if (dbResult.Success && dbResult.Data is { Count: > 0 })
@@ -1044,11 +1106,10 @@ public class MainForm : Form
         _auditExclude = dlg.AuditExclude;
 
         // Salva le impostazioni modificate
-        SettingsService.SaveAuditSettings(new AuditSettings
-        {
-            AuditFilter = _auditFilter,
-            AuditExclude = _auditExclude
-        });
+        AuditSettings settings = SettingsService.LoadAuditSettings();
+        settings.AuditFilter = _auditFilter;
+        settings.AuditExclude = _auditExclude;
+        SettingsService.SaveAuditSettings(settings);
 
         var auditDb = $"{db}_UPD";
         AddMessage("Inizializza/Resetta db Audit_UPD (SETUP/INSTALLAZIONE)");
@@ -1441,6 +1502,17 @@ public class MainForm : Form
             s.LastServer = _config.Server ?? string.Empty;
             s.LastDatabase = _config.Database ?? string.Empty;
             s.LastUser = _config.User ?? string.Empty;
+
+            // RestoreBounds: se la finestra è massimizzata, salva la dimensione "normale"
+            // a cui tornerà quando l'utente la ripristina.
+            Rectangle bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+            s.WindowLeft = bounds.Left;
+            s.WindowTop = bounds.Top;
+            s.WindowWidth = bounds.Width;
+            s.WindowHeight = bounds.Height;
+            s.WindowMaximized = WindowState == FormWindowState.Maximized;
+            s.SplitterLeft = splitMain.SplitterDistance;
+            s.SplitterTop = splitRight.SplitterDistance;
             Services.SettingsService.SaveAuditSettings(s);
         }
         catch { }
