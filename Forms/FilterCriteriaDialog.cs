@@ -24,56 +24,81 @@ public class FilterCriteriaDialog : Form
 
     public FilterCriteriaDialog(string columnName, ColumnFilterOperator op, string initialValue)
     {
-        // Layout a coordinate assolute pensato per 96 DPI: senza queste due righe, su
-        // un monitor ad alto DPI i controlli restano sovrapposti (stessa causa del
-        // disallineamento visto nell'intestazione della griglia).
-        AutoScaleMode = AutoScaleMode.Dpi;
-        AutoScaleDimensions = new SizeF(96f, 96f);
+        // Layout a pannelli con misure ricavate dal testo (vedi DialogLayout).
+        AutoScaleMode = AutoScaleMode.None;
 
         Text = "Filtro personalizzato";
-        FormBorderStyle = FormBorderStyle.FixedDialog;
+        FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
-        StartPosition = FormStartPosition.CenterParent;
+        StartPosition = FormStartPosition.Manual;
         Font = new Font("Segoe UI", 9f);
-        ClientSize = new Size(400, 108);
+        Padding = new Padding(DialogLayout.Gap(this, 0.75f));
+
+        int gap = DialogLayout.Gap(this);
+        int fieldWidth = TextRenderer.MeasureText(new string('W', 32), Font).Width;
+
+        TableLayoutPanel root = new()
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
 
         Label lblPrompt = new Label
         {
             Text = $"{columnName} {DescribeOperator(op)}:",
-            Location = new Point(12, 14),
-            Size = new Size(376, 18),
-            AutoEllipsis = true
+            AutoSize = true,
+            MaximumSize = new Size(fieldWidth, 0),
+            AutoEllipsis = true,
+            Margin = new Padding(3, 0, 3, gap)
         };
-        Controls.Add(lblPrompt);
+        root.Controls.Add(lblPrompt, 0, 0);
 
         txtValue = new TextBox
         {
             Text = initialValue,
-            Location = new Point(12, 36),
-            Size = new Size(376, 23)
+            Width = fieldWidth,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right,
+            Margin = new Padding(3, 0, 3, gap * 3)
         };
-        Controls.Add(txtValue);
+        root.Controls.Add(txtValue, 0, 1);
 
+        int buttonWidth = DialogLayout.ButtonWidth(this, "OK", "Annulla");
         Button btnOk = new Button
         {
             Text = "OK",
             DialogResult = DialogResult.OK,
-            Location = new Point(212, 70),
-            Size = new Size(84, 26)
+            AutoSize = true,
+            MinimumSize = new Size(buttonWidth, 0)
         };
         Button btnCancel = new Button
         {
             Text = "Annulla",
             DialogResult = DialogResult.Cancel,
-            Location = new Point(304, 70),
-            Size = new Size(84, 26)
+            AutoSize = true,
+            MinimumSize = new Size(buttonWidth, 0)
         };
-        Controls.Add(btnOk);
-        Controls.Add(btnCancel);
+        FlowLayoutPanel buttonsPanel = new()
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            Anchor = AnchorStyles.Right,
+            Margin = new Padding(0)
+        };
+        buttonsPanel.Controls.Add(btnOk);
+        buttonsPanel.Controls.Add(btnCancel);
+        root.Controls.Add(buttonsPanel, 0, 2);
+
+        Controls.Add(root);
         AcceptButton = btnOk;
         CancelButton = btnCancel;
+
+        DialogLayout.LockSizeAfterLoad(this);
     }
 
     #endregion Costruttore
