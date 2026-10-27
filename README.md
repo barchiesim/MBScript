@@ -69,6 +69,8 @@ Forms/
   MainForm.cs            Interfaccia principale
   ColumnSelectorDialog.cs  Selezione colonne/chiavi per script DML
   AuditFilterDialog.cs   Configurazione filtri per il sistema audit
+  FilterCriteriaDialog.cs  Valore per i filtri testo della griglia
+  DialogLayout.cs        Helper di layout DPI-indipendente per i dialoghi
 Services/
   SqlService.cs          Connessione, esecuzione query, formattazione valori SQL
   DatabaseExplorerService.cs  Metadati: database, tabelle, colonne, chiavi, indici

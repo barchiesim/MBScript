@@ -68,6 +68,16 @@ SqlResult<List<TableInfo>>.Fail(ex.Message)
 - `async/await` per qualsiasi I/O; `StringBuilder` per concatenazioni ripetitive.
 - Nessuna query SQL nei `Forms/`; nessuna magic string SQL fuori da `SqlService` o `ScriptGeneratorService`.
 
+### Layout dei form e DPI
+
+Su scale di sistema alte (es. 250%, desktop remoto) `AutoScaleMode.Dpi` su coordinate assolute ingrandisce i font ma non posizioni e dimensioni: i controlli si sovrappongono. Per dialoghi e form nuovi:
+
+- `AutoScaleMode = AutoScaleMode.None`, **niente** `Location`/`Size` fissi in pixel.
+- Disporre i controlli con `TableLayoutPanel` / `FlowLayoutPanel` (`AutoSize`, `Anchor`/`Dock`).
+- Ricavare le misure dal testo reale (`TextRenderer.MeasureText`, `Font.Height`), che è già in pixel al DPI corrente.
+- Per i dialoghi usare gli helper di [Forms/DialogLayout.cs](Forms/DialogLayout.cs): `Gap`, `ButtonWidth` e `LockSizeAfterLoad` (dimensione dal contenuto, poi resize libero con minimo, contenuta nello schermo e centrata sul proprietario; richiede `StartPosition = Manual`).
+- Riferimenti: [Forms/LoginForm.cs](Forms/LoginForm.cs), [Forms/ColumnSelectorDialog.cs](Forms/ColumnSelectorDialog.cs).
+
 ## Boundaries
 
 **Mai fare:**

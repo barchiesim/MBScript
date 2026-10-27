@@ -34,6 +34,8 @@ Tecnologie: .NET 8, Windows Forms, Microsoft.Data.SqlClient,
     MainForm.cs            Interfaccia principale (1340 righe)
     ColumnSelectorDialog.cs  Selezione colonne per script DML
     AuditFilterDialog.cs   Configurazione filtri audit
+    FilterCriteriaDialog.cs  Valore per i filtri testo della griglia
+    DialogLayout.cs        Helper di layout DPI-indipendente per i dialoghi
   Services/
     SqlService.cs          Connessione, query, formattazione valori SQL
     DatabaseExplorerService.cs  Metadati DB
@@ -346,6 +348,10 @@ FullName(TableInfo):
   Solo per DELETE: la lista colonne normali è nascosta, la lista chiavi occupa tutto.
   Solo per UPDATE: checkbox "Genera UPDATE condizionato" (inizializzata con
     _defaultConditionalUpdate, salvata al click OK per la sessione successiva).
+  Layout: TableLayoutPanel (intestazione / liste / checkbox / pulsanti), nessuna
+    coordinata assoluta. Liste larghe quanto il nome colonna più lungo (min 24
+    caratteri) e alte 10–18 righe, entro l'area dello schermo. Finestra
+    ridimensionabile con minimo pari alla dimensione iniziale (vedi nota DPI, cap. 16).
 
 
 10. SISTEMA DI AUDIT
@@ -702,6 +708,18 @@ F. LOGOUT
 - DefaultConditionalUpdate: la preferenza per UPDATE condizionato viene ricordata
   tra le sessioni tramite AuditSettings.DefaultConditionalUpdate e aggiornata
   ogni volta che l'utente chiude ColumnSelectorDialog con OK.
+
+- Layout dei form e DPI: con scale di sistema alte (250%, desktop remoto)
+  AutoScaleMode.Dpi su controlli a coordinate assolute ingrandiva i font ma non
+  posizioni/dimensioni, sovrapponendo etichette e liste. LoginForm,
+  ColumnSelectorDialog, AuditFilterDialog e FilterCriteriaDialog usano quindi
+  AutoScaleMode.None, TableLayoutPanel/FlowLayoutPanel e misure ricavate dal
+  testo (TextRenderer.MeasureText, Font.Height), già in pixel al DPI corrente.
+  DialogLayout.LockSizeAfterLoad calcola la dimensione con AutoSize, poi dopo il
+  Load spegne AutoSize (per permettere il resize), imposta quella dimensione come
+  minimo, la limita all'area di lavoro dello schermo e ricentra il dialogo sul
+  proprietario (StartPosition = Manual). MainForm resta su AutoScaleMode.Dpi ma
+  calcola splitter e barre di ricerca dal testo.
 
 
 ================================================================================

@@ -31,7 +31,9 @@ MBScript/
 │   ├── MainForm.cs             # Finestra principale
 │   ├── LoginForm.cs            # Form di login
 │   ├── AuditFilterDialog.cs    # Dialog filtro audit
-│   └── ColumnSelectorDialog.cs # Dialog selezione colonne
+│   ├── ColumnSelectorDialog.cs # Dialog selezione colonne
+│   ├── FilterCriteriaDialog.cs # Dialog valore filtro testo griglia
+│   └── DialogLayout.cs         # Helper layout DPI-indipendente dei dialoghi
 ├── Models/                     # DTO puri: nessuna logica, solo dati
 │   ├── ApplicationOptions.cs
 │   ├── AuditSettings.cs
@@ -236,7 +238,9 @@ MBScript/
 │   ├── MainForm.cs             # Finestra principale
 │   ├── LoginForm.cs            # Form di login
 │   ├── AuditFilterDialog.cs    # Dialog filtro audit
-│   └── ColumnSelectorDialog.cs # Dialog selezione colonne
+│   ├── ColumnSelectorDialog.cs # Dialog selezione colonne
+│   ├── FilterCriteriaDialog.cs # Dialog valore filtro testo griglia
+│   └── DialogLayout.cs         # Helper layout DPI-indipendente dei dialoghi
 ├── Models/
 │   ├── ApplicationOptions.cs
 │   ├── AuditSettings.cs
